@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from openai import APIError, NotFoundError
+from openai import APIError, NotFoundError, RateLimitError
 
 from . import agent, llm
 from .planner import plan
@@ -173,6 +173,18 @@ async def run_query(query: str) -> AsyncIterator[str]:
         # the operator is left guessing at an opaque 404.
         log.exception("model %r not available at %s", llm.model(), llm.base_url())
         yield sse("error", {"message": f"model '{llm.model()}' unavailable at this endpoint"})
+        yield sse("state", {"state": "error"})
+        yield sse("done", {})
+        return
+    except RateLimitError:
+        # Distinct and actionable: the deploy is fine, the quota is not. The
+        # SDK already retries 429 with backoff, so reaching here means a
+        # sustained limit rather than a burst.
+        log.exception("provider rate limit hit for model %r", llm.model())
+        yield sse(
+            "error",
+            {"message": f"provider rate limit reached ({stage}) - the API key is over quota"},
+        )
         yield sse("state", {"state": "error"})
         yield sse("done", {})
         return

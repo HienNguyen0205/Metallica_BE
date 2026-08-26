@@ -16,11 +16,26 @@ from openai import AsyncOpenAI
 #: Google AI Studio's OpenAI-compatible surface. Free tier, no card.
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
-#: Measured, not assumed. `gemini-2.5-flash` 404s ("no longer available to new
-#: users"); `gemini-3.7-flash` and the `gemini-flash-latest` alias both hang
-#: past 45s on the free tier; this one answers in ~3s. When it is eventually
-#: retired the 404 says which model replaced it — see `models.list()`.
-DEFAULT_MODEL = "gemini-3.6-flash"
+#: Measured against the free tier, not taken from docs — every assumption here
+#: has been wrong at least once:
+#:
+#:   gemini-2.5-flash        404, "no longer available to new users"
+#:   gemini-3.7-flash        hangs past 45s
+#:   gemini-flash-latest     hangs past 45s
+#:   gemini-3-flash-preview  InternalServerError
+#:   gemini-3.6-flash        works, but only 20 requests PER DAY on free tier
+#:   gemini-3.5-flash        works, 15.5s to first tool call
+#:   gemini-3.5-flash-lite   works, 0.8s tool call / 1.2s structured output
+#:
+#: The daily quota is per model, so the choice is a quota decision as much as a
+#: speed one: at 20/day and 2-3 calls per query, gemini-3.6-flash allowed about
+#: six questions a day. Pinned rather than using the `-latest` alias because an
+#: alias can move to a model with a tiny quota without warning, which is
+#: exactly how 3.6-flash behaves.
+#:
+#: When this is retired, the 429/404 body names the quota and the replacement;
+#: `models.list()` shows what is currently available.
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 #: An interactive HUD cannot sit on the SDK's 10-minute default. A model that
 #: has not answered by now is not going to feel like a response anyway.

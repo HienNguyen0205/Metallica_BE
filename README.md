@@ -242,7 +242,37 @@ Memory (§15), RAG (§16), vision (§14) and voice (§12/§13) have no
 implementation. Approvals are process-local, so the orchestrator is
 single-instance until they move to shared state.
 
-Model choice is measured, not assumed: `gemini-2.5-flash` is retired (404), and
-`gemini-3.7-flash` and the `gemini-flash-latest` alias both hang past 45s on the
-free tier. `gemini-3.6-flash` answers in ~3s. Expect ~20-25s for a full
-two-tool turn, which is three model calls.
+## Choosing a model
+
+Measured against the free tier, because every assumption here has been wrong at
+least once:
+
+| Model | Tool call | Structured output | Note |
+| --- | --- | --- | --- |
+| `gemini-2.5-flash` | — | — | 404, retired for new users |
+| `gemini-3.7-flash` | — | — | hangs past 45s |
+| `gemini-flash-latest` | — | — | hangs past 45s |
+| `gemini-3-flash-preview` | — | — | InternalServerError |
+| `gemini-3.6-flash` | 2.9s | ok | **only 20 requests/day** |
+| `gemini-3.5-flash` | 15.5s | 10.7s | slow |
+| **`gemini-3.5-flash-lite`** | **0.8s** | **1.2s** | the default |
+
+**The free daily quota is per model, and it is the binding constraint** — not
+speed, and not tokens. A query costs 2-3 model calls, so `gemini-3.6-flash` at
+20 requests/day allowed roughly six questions before every request returned
+`RESOURCE_EXHAUSTED`. A full two-tool turn is ~6s on the default and was ~23s on
+3.6-flash.
+
+Pinned rather than using a `-latest` alias: an alias can move to a model with a
+tiny quota without warning, which is exactly how 3.6-flash behaves.
+
+When a 429 arrives, read the body — it names the real limit:
+
+```
+quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier
+quotaValue: 20
+```
+
+If the daily quota is too tight for your usage, the gateway makes the escape one
+env var: Groq's free tier is measured in thousands of requests per day rather
+than tens.
