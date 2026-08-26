@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      # Event contract, §11 permission gate, §22 tool sandboxing.
+      - name: Transport and permission tests
+        run: python test_stream.py
+
+      # The real agent loop and planner against a local fake provider.
+      # No API key, no network, no cost.
+      - name: Model gateway tests
+        run: python test_provider.py

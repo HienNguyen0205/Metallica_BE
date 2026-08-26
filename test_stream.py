@@ -1,0 +1,281 @@
+"""Checks for the transport and the §11 permission gate.
+
+Runs without an API key — the model calls are stubbed, because what is under
+test is the event contract and the approval wiring, not the model.
+
+    python test_stream.py
+"""
+
+import asyncio
+import json
+
+from friday import agent, main, tools
+from friday.schema import VisualizationPlan, VizData
+
+PLAN = VisualizationPlan(
+    type="radial_gauge",
+    title="SYSTEM LOAD",
+    data=VizData(metrics=[{"label": "CPU", "value": 73, "unit": "%"}]),
+    answer="planner phrasing",
+)
+
+
+def parse(chunk: str) -> tuple[str, dict]:
+    assert chunk.endswith("\n\n"), f"malformed SSE frame: {chunk!r}"
+    name, _, data = chunk.strip().partition("\n")
+    return name.removeprefix("event: "), json.loads(data.removeprefix("data: "))
+
+
+def collect(query: str = "q") -> list[tuple[str, dict]]:
+    async def drain():
+        return [parse(c) async for c in main.run_query(query)]
+
+    return asyncio.run(drain())
+
+
+def stub_planner():
+    async def fake_plan(query, answer, evidence):
+        return PLAN
+
+    main.plan = fake_plan
+
+
+# ---------- transport ----------
+
+
+def test_tool_flow_event_order() -> None:
+    stub_planner()
+
+    async def fake_agent(query, approve, result):
+        yield agent.AgentEvent("state", {"state": "tool_execution"})
+        yield agent.AgentEvent("tool", {"tool": "get_system_metrics", "risk": "low"})
+        yield agent.AgentEvent("state", {"state": "processing"})
+        result.text = "CPU is at 73 percent."
+        result.evidence.append({"tool": "get_system_metrics", "output": {"cpu_percent": 73}})
+
+    original, agent.run = agent.run, fake_agent
+    try:
+        events = collect()
+    finally:
+        agent.run = original
+
+    names = [n for n, _ in events]
+    assert names == ["state", "state", "tool", "state", "state", "viz", "state", "answer", "done"], names
+
+    states = [p["state"] for n, p in events if n == "state"]
+    assert states == ["thinking", "tool_execution", "processing", "visualizing", "speaking"], states
+
+    viz = next(p for n, p in events if n == "viz")
+    assert viz["type"] == "radial_gauge"
+    assert "answer" not in viz, "the spoken line rides its own event"
+
+    # the agent's own words win over the planner's restatement
+    assert next(p for n, p in events if n == "answer")["text"] == "CPU is at 73 percent."
+
+
+def test_preview_reaches_the_ui_before_the_planner_runs() -> None:
+    """§18 — the hologram materializes as data lands, not after the turn ends."""
+    stub_planner()
+
+    async def fake_agent(query, approve, result):
+        yield agent.AgentEvent("state", {"state": "tool_execution"})
+        yield agent.AgentEvent(
+            "preview",
+            {"type": "radial_gauge", "title": "SYSTEM LOAD",
+             "data": {"metrics": [{"label": "CPU", "value": 22, "unit": "%"}]}},
+        )
+        yield agent.AgentEvent("state", {"state": "tool_execution"})
+        yield agent.AgentEvent(
+            "preview",
+            {"type": "bar_3d", "title": "TOP PROCESSES",
+             "data": {"series": [{"label": "MEM", "points": [10.8, 5.8]}]}},
+        )
+        result.text = "done"
+
+    original, agent.run = agent.run, fake_agent
+    try:
+        events = collect()
+    finally:
+        agent.run = original
+
+    vizzes = [p for n, p in events if n == "viz"]
+    # two previews plus the planner's final spec — a sequence, not one payload
+    assert len(vizzes) == 3, [v["title"] for v in vizzes]
+    assert [v["type"] for v in vizzes] == ["radial_gauge", "bar_3d", "radial_gauge"]
+    assert [v["title"] for v in vizzes] == ["SYSTEM LOAD", "TOP PROCESSES", "SYSTEM LOAD"]
+
+    # previews are not interactive: they are mid-flight, and their elements are
+    # about to be replaced by the planner's spec
+    assert vizzes[0]["interaction"] == "none"
+
+
+def test_agent_failure_still_closes_the_stream() -> None:
+    """A dead model must not leave the UI stuck in THINKING."""
+    stub_planner()
+
+    async def broken(query, approve, result):
+        raise RuntimeError("boom")
+        yield  # pragma: no cover - makes this an async generator
+
+    original, agent.run = agent.run, broken
+    try:
+        events = collect()
+    finally:
+        agent.run = original
+
+    assert [n for n, _ in events] == ["state", "error", "state", "done"]
+    assert events[2][1]["state"] == "error"
+
+
+# ---------- the UI's state machine ----------
+
+#: Mirrored from TRANSITIONS in src/lib/store.ts (UI repo). The frontend uses a
+#: *guarded* transition that drops illegal edges silently, so emitting a state
+#: it will not accept strands the HUD without any error anywhere. Keep in sync.
+UI_TRANSITIONS = {
+    "idle": ["listening", "thinking", "warning", "error"],
+    "listening": ["thinking", "idle", "warning", "error"],
+    "thinking": ["searching", "tool_execution", "processing", "visualizing", "speaking", "warning", "error"],
+    "searching": ["processing", "tool_execution", "visualizing", "speaking", "warning", "error"],
+    "processing": ["visualizing", "tool_execution", "speaking", "warning", "error"],
+    "tool_execution": ["processing", "visualizing", "speaking", "warning", "error"],
+    "visualizing": ["speaking", "processing", "idle", "warning", "error"],
+    "speaking": ["idle", "listening", "warning", "error"],
+    "warning": ["idle", "speaking", "error"],
+    "error": ["idle"],
+}
+
+
+def assert_walkable(events: list[tuple[str, dict]]) -> None:
+    current = "idle"
+    for name, payload in events:
+        if name != "state":
+            continue
+        nxt = payload["state"]
+        # A repeat of the current state is dropped by the guard too, but drops
+        # nothing that matters — the UI is already there. Only a *move* the
+        # table refuses is a real defect.
+        if nxt == current:
+            continue
+        assert nxt in UI_TRANSITIONS[current], (
+            f"{current} -> {nxt} is not a legal edge; the UI would drop it silently"
+        )
+        current = nxt
+
+
+def test_every_emitted_state_sequence_is_legal_in_the_ui() -> None:
+    """§18 previews must not emit an edge the frontend refuses.
+
+    Caught live: a preview announced `visualizing`, and the next tool's
+    `tool_execution` was then dropped, leaving the HUD stuck.
+    """
+    stub_planner()
+
+    async def two_tool_agent(query, approve, result):
+        for viz_type, title in [("radial_gauge", "SYSTEM LOAD"), ("bar_3d", "TOP PROCESSES")]:
+            yield agent.AgentEvent("state", {"state": "tool_execution"})
+            yield agent.AgentEvent("tool", {"tool": "t", "risk": "low"})
+            yield agent.AgentEvent("preview", {"type": viz_type, "title": title, "data": {}})
+        yield agent.AgentEvent("state", {"state": "processing"})
+        result.text = "done"
+
+    original, agent.run = agent.run, two_tool_agent
+    try:
+        events = collect()
+    finally:
+        agent.run = original
+
+    assert_walkable(events)
+    assert len([1 for n, _ in events if n == "viz"]) == 3
+
+
+# ---------- §11 permission gate ----------
+
+
+def _run_with_decision(decision: bool | None) -> tuple[list[tuple[str, dict]], list[bool]]:
+    """Drive a high-risk approval, answering it the way the UI would.
+
+    `decision=None` answers nothing, exercising the timeout path.
+    """
+    stub_planner()
+    verdicts: list[bool] = []
+
+    async def gated_agent(query, approve, result):
+        verdicts.append(await approve("write_note", "high", {"name": "x", "body": "y"}))
+        result.text = "done"
+        yield agent.AgentEvent("state", {"state": "processing"})
+
+    async def drive():
+        events = []
+        async for chunk in main.run_query("q"):
+            name, payload = parse(chunk)
+            events.append((name, payload))
+            if name == "confirm" and decision is not None:
+                # what POST /confirm does, without the HTTP hop
+                await main.confirm_endpoint(main.Decision(id=payload["id"], approved=decision))
+        return events
+
+    original_agent, agent.run = agent.run, gated_agent
+    original_timeout, main.CONFIRM_TIMEOUT_S = main.CONFIRM_TIMEOUT_S, 0.3
+    try:
+        return asyncio.run(drive()), verdicts
+    finally:
+        agent.run = original_agent
+        main.CONFIRM_TIMEOUT_S = original_timeout
+
+
+def test_high_risk_call_is_announced_before_it_runs() -> None:
+    events, verdicts = _run_with_decision(True)
+    confirm = next(p for n, p in events if n == "confirm")
+    assert confirm["tool"] == "write_note"
+    assert confirm["risk"] == "high"
+    # the UI must be able to show what will actually run
+    assert confirm["input"] == {"name": "x", "body": "y"}
+    assert verdicts == [True]
+
+
+def test_denial_is_reported_to_the_agent() -> None:
+    _, verdicts = _run_with_decision(False)
+    assert verdicts == [False]
+
+
+def test_silence_is_not_consent() -> None:
+    """An unanswered prompt must expire as a refusal, not an approval."""
+    _, verdicts = _run_with_decision(None)
+    assert verdicts == [False]
+    assert not main.PENDING, "expired decisions must not leak"
+
+
+def test_only_high_risk_tools_are_gated() -> None:
+    assert tools.REGISTRY["write_note"].needs_confirmation()
+    assert not tools.REGISTRY["get_system_metrics"].needs_confirmation()
+    # risk is server-side policy; the model never sees or sets it
+    shape = tools.REGISTRY["write_note"].as_api_tool()
+    assert "risk" not in json.dumps(shape), shape
+    # and it is the OpenAI function-calling shape the gateway sends
+    assert shape["type"] == "function"
+    assert shape["function"]["name"] == "write_note"
+
+
+# ---------- §22 tool sandboxing ----------
+
+
+def test_note_name_cannot_escape_the_notes_directory() -> None:
+    for hostile in ["../../../evil", "..\\..\\evil", "/etc/passwd", "a/b/c"]:
+        written = asyncio.run(tools._write_note({"name": hostile, "body": "x"}))
+        assert "written" in written, written
+        landed = (tools.NOTES_DIR / written["written"]).resolve()
+        assert landed.parent == tools.NOTES_DIR.resolve(), landed
+        landed.unlink()
+
+
+def test_empty_note_name_is_rejected() -> None:
+    assert "error" in asyncio.run(tools._write_note({"name": "///", "body": "x"}))
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print(f"  ok  {name}")
+    print("all checks passed")
