@@ -11,6 +11,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -23,15 +24,53 @@ from openai import APIError, NotFoundError
 from . import agent, llm
 from .planner import plan
 
+# uvicorn configures only its own loggers, so without this the diagnostics
+# below never reach Render's log stream — the one place you can read them.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(levelname)s %(name)s: %(message)s",
+)
+
 log = logging.getLogger("friday")
 
-app = FastAPI(title="FRIDAY Orchestrator")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("FRIDAY_ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 
-# The UI is served from a different origin in dev. Kept to an explicit list —
-# a wildcard here would let any page on the machine drive the agent.
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Announce the effective config once, without secrets.
+
+    A misconfigured deploy fails in ways that point somewhere else: a browser
+    CORS rejection shows only in the browser console while the server logs a
+    clean 200, and a missing key surfaces as an `error` event the UI reports as
+    the planner being down. Both are one log line to diagnose from here.
+    """
+    log.info("planner configured: %s", llm.configured())
+    log.info("model: %s at %s", llm.model(), llm.base_url())
+    log.info("allowed origins: %s", ALLOWED_ORIGINS)
+    if not llm.configured():
+        log.warning("no provider key set - every query will return an error event")
+    if not ALLOWED_ORIGINS:
+        log.warning("FRIDAY_ALLOWED_ORIGINS is empty - the browser will block every origin")
+    elif ALLOWED_ORIGINS == ["http://localhost:3000"]:
+        log.warning(
+            "FRIDAY_ALLOWED_ORIGINS is still the localhost default; "
+            "a deployed frontend will be blocked by the browser"
+        )
+    yield
+
+
+app = FastAPI(title="FRIDAY Orchestrator", lifespan=lifespan)
+
+# The UI is served from a different origin. Kept to an explicit list — a
+# wildcard here would let any page in any tab drive the agent.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("FRIDAY_ALLOWED_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["POST", "GET"],
     allow_headers=["content-type"],
 )

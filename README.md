@@ -174,6 +174,68 @@ hostile note name cannot escape `notes/`. Model calls are stubbed.
 fake OpenAI-compatible server: the tool-call round trip, evidence reaching the
 planner, and the `json_schema` -> `json_object` fallback. No key, no network.
 
+## Deploying to Render
+
+`render.yaml` is a Blueprint: **New → Blueprint** in the dashboard, point it at
+this repo, and it creates the service. Or create a Web Service manually with:
+
+| Field | Value |
+| --- | --- |
+| Runtime | Python |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn friday.main:app --host 0.0.0.0 --port $PORT` |
+| Health check path | `/health` |
+
+Then set two environment variables in the dashboard (not in the repo):
+
+- `GEMINI_API_KEY` — your key
+- `FRIDAY_ALLOWED_ORIGINS` — the deployed frontend's origin, e.g.
+  `https://metallica.vercel.app`. No trailing slash, no path.
+
+Finally rebuild the frontend with `NEXT_PUBLIC_FRIDAY_API` set to the Render
+URL. It is inlined at build time, so changing it needs a redeploy of the UI,
+not just an env var edit.
+
+### Check the deploy actually worked
+
+`GET /health` answers without a model call, so it stays green even when the
+provider is misconfigured. Read the startup lines in Render's log instead:
+
+```
+INFO friday: planner configured: True
+INFO friday: model: gemini-3.6-flash at https://...
+INFO friday: allowed origins: ['https://metallica.vercel.app']
+```
+
+A `WARNING` on either of the last two is the cause of most failed first
+deploys. A CORS rejection in particular is invisible server-side — Render logs
+a clean 200 while the browser silently drops the response, and the UI falls
+back to its canned offline planner as if nothing were wrong.
+
+### Things that behave differently once deployed
+
+**Do not add gunicorn workers.** §11 approvals live in an in-process dict, so a
+second worker can answer `/confirm` without holding the Future the streaming
+request waits on. Every high-risk tool would then time out as denied — and only
+for some requests, which is worse than failing outright. One uvicorn process is
+the deliberate ceiling until approvals move to shared state.
+
+**The free tier sleeps.** Render spins a free service down after 15 minutes idle
+and takes 30-60s to wake. The first query after a quiet spell leaves the HUD in
+THINKING for about a minute. Nothing is broken, but it reads as broken.
+
+**`get_system_metrics` now reports Render, not your laptop.** The tool reads the
+host the orchestrator runs on, which after deploying is a 512 MB / 0.1 CPU
+container. The gauges are still real measurements — of a different machine than
+the one you tested on.
+
+**`write_note` does not persist.** Render's filesystem is ephemeral, so `notes/`
+is wiped on every deploy and restart. It needs a Render Disk or object storage
+before it means anything.
+
+**Latency roughly doubles.** A two-tool turn is three model calls; locally that
+is 20-25s, and 0.1 CPU plus a further network hop does not help.
+
 ## Not built yet
 
 Memory (§15), RAG (§16), vision (§14) and voice (§12/§13) have no
