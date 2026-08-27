@@ -4,7 +4,7 @@ Unlike the transport checks, these run the *real* `agent.run` and `planner.plan`
 — the tool-call round trip, the JSON parsing, the schema fallback — against a
 local server standing in for Gemini. No API key, no network, no cost.
 
-    python test_provider.py
+    PYTHONPATH=. python tests/integration/test_provider.py
 """
 
 import asyncio

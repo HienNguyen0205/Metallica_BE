@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import APIError, NotFoundError, RateLimitError
 
-from friday import agent, llm
+from friday import agent, llm, memory
 from friday.api import dependencies as deps
 from friday.api.dependencies import PENDING
 from friday.api.schemas import Decision, Query
@@ -56,7 +56,7 @@ log = logging.getLogger("friday")
 router = APIRouter()
 
 
-async def run_query(query: str) -> AsyncIterator[str]:
+async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[str]:
     yield sse("state", {"state": "thinking"})
 
     outcome = agent.AgentResult(text="")
@@ -82,7 +82,7 @@ async def run_query(query: str) -> AsyncIterator[str]:
     async def pump() -> None:
         nonlocal failure
         try:
-            async for event in agent.run(query, approve, outcome):
+            async for event in agent.run(query, approve, outcome, memory.history(session_id)):
                 await events.put(event)
         except BaseException as err:
             failure = err
@@ -143,14 +143,19 @@ async def run_query(query: str) -> AsyncIterator[str]:
     yield sse("state", {"state": "visualizing"})
     yield sse("viz", result.model_dump(exclude={"answer"}, exclude_none=True))
     yield sse("state", {"state": "speaking"})
-    yield sse("answer", {"text": outcome.text or result.answer})
+    answer = outcome.text or result.answer
+    # Recorded only once the turn has actually produced an answer — a failed
+    # turn returns above, so a provider outage cannot poison the session with
+    # an exchange that never happened.
+    memory.remember(session_id, query, answer)
+    yield sse("answer", {"text": answer})
     yield sse("done", {})
 
 
 @router.post("/query")
 async def query_endpoint(body: Query) -> StreamingResponse:
     return StreamingResponse(
-        run_query(body.query),
+        run_query(body.query, body.session_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

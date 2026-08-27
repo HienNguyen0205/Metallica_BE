@@ -98,6 +98,41 @@ Note the endpoint is **POST**, so the frontend uses `fetch` + a stream reader
 rather than `EventSource`. `EventSource` is GET-only, which would put the
 user's question in the URL and therefore in every access log along the way.
 
+## §15 Memory
+
+Short-term only, and on purpose. `POST /query` accepts an optional
+`session_id`; `friday/memory.py` keeps the last **3 exchanges** for it in this
+process and replays them between the system prompt and the new question. That
+is the whole feature, and it is what makes "and the disk?" resolve to anything.
+
+What it is not: durable, shared between workers, or searchable. The doc's §15
+lists PostgreSQL, Redis, a vector DB and object storage behind five kinds of
+memory; none of that is needed to fix the thing that was broken, and the §11
+approvals already pin this service to one process, so process-local state costs
+no deployment freedom that was available anyway.
+
+**Only the final text of each turn is stored** — never `tool_calls`. Replaying a
+tool call obliges us to replay its matching tool result too, or the provider
+rejects the message list, and a half-replayed exchange is a quietly wrong prompt
+rather than a loud error. Re-fetching through a tool is also the only way the
+numbers stay current.
+
+Two bounds that are not optional:
+
+- **3 exchanges per session.** Each one is re-sent on every later turn, and a
+  long tail of stale context makes the model answer the wrong question.
+- **200 sessions, LRU.** `/query` is public and the id comes from the client, so
+  an unbounded dict here is a way to exhaust the server's memory with a loop of
+  random ids — not merely a leak.
+
+A turn that fails is not recorded, so a provider outage cannot leave a
+half-finished exchange as context for the next question.
+
+The frontend generates the id per **tab** and keeps it in `sessionStorage`
+(`src/lib/api/fridayClient.ts`): the memory it keys into dies with this process,
+so an id that outlived the tab would point at nothing while implying continuity.
+A client that sends no id gets the old stateless behaviour.
+
 ## §10 Tools and §11 permissions
 
 Tools are declared in `friday/tools.py` with a risk level. The orchestrator —
@@ -160,15 +195,23 @@ as a degraded live mode.
 
 ## Tests
 
+Run from `backend/`. `PYTHONPATH` is needed because Python puts the *script's*
+directory on `sys.path`, not the working directory:
+
 ```bash
-./.venv/Scripts/python.exe test_stream.py     # transport + permissions
-./.venv/Scripts/python.exe test_provider.py   # gateway against a fake provider
+PYTHONPATH=. ./.venv/Scripts/python.exe tests/unit/test_memory.py
+PYTHONPATH=. ./.venv/Scripts/python.exe tests/integration/test_stream.py
+PYTHONPATH=. ./.venv/Scripts/python.exe tests/integration/test_provider.py
 ```
 
 `test_stream.py` covers the event sequence, the approval gate (announced before
 running, denial reported to the model, timeout refuses), that a dead model still
 closes the stream rather than leaving the UI stuck in `THINKING`, and that a
 hostile note name cannot escape `notes/`. Model calls are stubbed.
+
+`test_memory.py` covers §15: that prior exchanges actually reach the model's
+message list in order, that two sessions cannot see each other, that a failed
+turn is not recorded, and that both caps hold.
 
 `test_provider.py` runs the **real** agent loop and planner against a local
 fake OpenAI-compatible server: the tool-call round trip, evidence reaching the
@@ -238,8 +281,11 @@ is 20-25s, and 0.1 CPU plus a further network hop does not help.
 
 ## Not built yet
 
-Memory (§15), RAG (§16), vision (§14) and voice (§12/§13) have no
-implementation. Approvals are process-local, so the orchestrator is
+RAG (§16) and vision (§14) have no implementation. Memory (§15) is short-term
+only — see above; the episodic, semantic and preference tiers do not exist. Voice
+(§12/§13) is implemented entirely in the UI on the browser's own speech
+engines, so it needs nothing from this service — a spoken question arrives at
+`/query` as ordinary text. Approvals are process-local, so the orchestrator is
 single-instance until they move to shared state.
 
 ## Choosing a model

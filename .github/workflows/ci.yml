@@ -15,6 +15,11 @@ jobs:
     name: Orchestrator
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # The suites live under tests/, and Python puts the *script's* directory
+      # on sys.path rather than the working directory — without this, `from
+      # friday import ...` fails with ModuleNotFoundError.
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
 
@@ -26,11 +31,15 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # §15 short-term memory: replay into the prompt, session isolation, caps.
+      - name: Memory tests
+        run: python tests/unit/test_memory.py
+
       # Event contract, §11 permission gate, §22 tool sandboxing.
       - name: Transport and permission tests
-        run: python test_stream.py
+        run: python tests/integration/test_stream.py
 
       # The real agent loop and planner against a local fake provider.
       # No API key, no network, no cost.
       - name: Model gateway tests
-        run: python test_provider.py
+        run: python tests/integration/test_provider.py

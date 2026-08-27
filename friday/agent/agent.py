@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
 from friday import llm
@@ -47,10 +47,14 @@ async def run(
     query: str,
     approve: Approver,
     result: AgentResult,
+    history: Sequence[dict[str, str]] = (),
 ) -> AsyncIterator[AgentEvent]:
     api = llm.client()
+    # §15 — prior exchanges sit between the system prompt and the new question,
+    # which is what lets "and the disk?" resolve to anything.
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM},
+        *history,
         {"role": "user", "content": query},
     ]
 
