@@ -1,22 +1,17 @@
-"""§9 agent loop — plan, call tools, gather results.
-
-A manual loop rather than an SDK helper: it has to yield a state change before
-each tool runs and pause mid-iteration waiting for an operator decision, which
-a batteries-included runner cannot interleave into an SSE stream.
-"""
+"""§9 agent loop — plan, call tools, gather results."""
 
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any
 
-from . import llm
-from .tools import REGISTRY, api_tools
+from friday import llm
+from friday.tools.registry import REGISTRY, api_tools
+
+from .state import AgentEvent, AgentResult
 
 log = logging.getLogger("friday.agent")
 
-#: Stops a pathological plan from looping on tools forever.
 MAX_TURNS = 6
 
 SYSTEM = """You are FRIDAY, an AI operations interface.
@@ -32,39 +27,14 @@ substitute invented figures for the data you were refused.
 
 When you have what you need, answer in one or two calm, factual sentences."""
 
-#: Called with (tool_name, risk, tool_input); returns True to allow the call.
 Approver = Callable[[str, str, dict[str, Any]], Awaitable[bool]]
 
 
-@dataclass
-class AgentEvent:
-    """Something the transport should tell the UI about."""
-
-    kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class AgentResult:
-    text: str
-    evidence: list[dict[str, Any]] = field(default_factory=list)
-
-
 def _echo(call: Any) -> dict[str, Any]:
-    """Replay a tool call for the next turn, keeping provider-specific extras.
-
-    Rebuilding this by hand from id/name/arguments loses fields the provider
-    requires back. Gemini attaches a `thought_signature` under
-    `extra_content.google` and rejects the following turn with a 400 if it is
-    missing. Round-tripping every non-null field keeps that working without
-    hard-coding one vendor's quirk.
-    """
     return {key: value for key, value in call.model_dump().items() if value is not None}
 
 
 def _arguments(call: Any) -> dict[str, Any]:
-    """Tool arguments arrive as a model-generated JSON string — parse, never
-    string-match, and never trust that it parses at all."""
     try:
         parsed = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError:
@@ -78,7 +48,6 @@ async def run(
     approve: Approver,
     result: AgentResult,
 ) -> AsyncIterator[AgentEvent]:
-    """Drive the tool loop, yielding progress. Fills `result` in place."""
     api = llm.client()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM},
@@ -130,19 +99,16 @@ async def run(
             yield AgentEvent("tool", {"tool": tool.name, "risk": tool.risk})
             try:
                 output = await tool.run(payload)
-            except Exception as err:  # a broken tool must not kill the turn
+            except Exception as err:
                 log.exception("tool %s failed", tool.name)
                 output = {"error": type(err).__name__}
 
             result.evidence.append({"tool": tool.name, "output": output})
 
-            # §18 — show it the moment it lands rather than at the end of the
-            # turn. Deterministic, so this costs no extra model call.
             if tool.preview and "error" not in output:
                 try:
                     yield AgentEvent("preview", tool.preview(output))
                 except Exception:
-                    # A malformed preview must never cost us the tool result.
                     log.exception("preview for %s failed", tool.name)
 
             messages.append(

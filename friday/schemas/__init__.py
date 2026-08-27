@@ -1,6 +1,6 @@
-"""Shim — kept for backwards compatibility. New code should import from friday.schemas."""
+"""Re-export for backwards compatibility."""
 
-from friday.schemas.visualization import (
+from .visualization import (
     GeoPoint,
     MetricDatum,
     NodeDatum,

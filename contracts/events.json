@@ -1,0 +1,14 @@
+{
+  "events": [
+    "state",
+    "tool",
+    "confirm",
+    "denied",
+    "preview",
+    "viz",
+    "answer",
+    "done",
+    "error"
+  ],
+  "description": "SSE event contract v1"
+}
