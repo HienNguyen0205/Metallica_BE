@@ -68,11 +68,23 @@ def test_the_cache_is_bounded_and_drops_the_least_recently_used():
     từng mục - rồi sau enforce_cap() khẳng định luôn cả hai vế: đúng số lượng
     VÀ đúng tập hợp còn sống (mọi mục sống mới hơn mọi mục bị bỏ). Chỉ đếm số
     lượng không phân biệt được một cap đúng với một cap xén nhầm đầu.
+
+    Thứ tự chèn vào CACHE KHÔNG được trùng thứ tự last_used_at. Nếu id=0 vừa
+    cũ nhất vừa là phần tử đầu danh sách, một enforce_cap xén theo VỊ TRÍ
+    (`del CACHE[:len(CACHE)-MAX_MEMORIES]` hoặc `del CACHE[MAX_MEMORIES:]`,
+    bỏ qua last_used_at hoàn toàn) sẽ vô tình ra đúng tập bị bỏ và test không
+    bắt được nó - trong khi `touch()` cập nhật last_used_at tại chỗ, không di
+    chuyển phần tử trong CACHE, nên một mục ở vị trí cũ hoàn toàn có thể là
+    mục mới dùng gần đây nhất trong thực tế. Nên ở đây chèn xen kẽ id chẵn rồi
+    tới id lẻ - 10 id cũ nhất (0..9) rơi vào hai vùng rời nhau của CACHE,
+    không nằm gọn ở đầu hay ở cuối, nên chỉ một cap xén theo *field* mới ra
+    đúng đáp số.
     """
     lt.clear()
     total = lt.MAX_MEMORIES + 10
-    for i in range(total):
-        # last_used_at tăng dần theo i, mỗi mục một mốc riêng - i=0 cũ nhất.
+    insertion_order = [i for i in range(total) if i % 2 == 0] + [i for i in range(total) if i % 2 == 1]
+    for i in insertion_order:
+        # last_used_at tăng dần theo id, không theo vị trí chèn - id=0 cũ nhất.
         lt.CACHE.append(mem(i, f"m{i}", [1.0, 0.0], last_used_at=f"2026-01-01T{i:05d}"))
     lt.enforce_cap()
 
