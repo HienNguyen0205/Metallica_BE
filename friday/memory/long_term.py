@@ -32,10 +32,27 @@ from friday.memory.store import select_all as store_select_all
 
 log = logging.getLogger("friday.memory")
 
-#: ponytail: 0.6 là điểm khởi đầu chưa hiệu chỉnh, không phải ngưỡng đúng.
-#: Đo lại khi có ~30 ký ức thật: chạy một loạt câu hỏi liên quan và không liên
-#: quan, xem phân bố điểm, chọn ngưỡng tách được hai nhóm.
-SIMILARITY_FLOOR = 0.6
+#: Đo trên 6 ký ức thật với gemini-embedding-001, 768 chiều (xem
+#: docs/AGENTIC_MEMORY_RESULTS.md). Ba dải:
+#:
+#:   ký ức đúng cho câu hỏi của nó   0.625 – 0.785   (6/6 xếp hạng #1)
+#:   ký ức khác trên câu hỏi liên quan 0.41 – 0.600
+#:   mọi ký ức trên câu hỏi KHÔNG liên quan  ≤ 0.504
+#:
+#: 0.58 nằm giữa hai dải quan trọng nhất — trên mọi điểm của câu hỏi không liên
+#: quan 0.076, dưới mọi ký ức đúng 0.045 — và cố ý KHÔNG chọn 0.61 (điểm giữa
+#: khe hẹp 0.025 giữa hai dải đầu). Một khe 0.025 đo trên 6 mẫu là nhiễu, không
+#: phải tín hiệu; đậu đúng lên mép nó nghĩa là một cách diễn đạt khác đi một
+#: chút sẽ lật kết quả.
+#:
+#: Bất đối xứng của lỗi quyết định hướng làm tròn: ngưỡng quá cao thì FRIDAY
+#: lặng lẽ không nhớ ra — đúng cái tính năng này tồn tại để tránh, và không có
+#: triệu chứng nào ngoài "hình như không có ký ức nào liên quan". Ngưỡng quá
+#: thấp chỉ thêm nhiễu, mà nhiễu đã bị chặn hai lớp bởi TOP_K_DEFAULT và
+#: RECALL_BLOCK_MAX_CHARS.
+#:
+#: ponytail: đo lại khi corpus tới ~30 ký ức. Lệnh đo nằm trong results doc.
+SIMILARITY_FLOOR = 0.58
 
 #: Một con số, hai chỗ dùng: store chỉ kéo về đúng chừng này dòng.
 MAX_MEMORIES = store_max_rows
