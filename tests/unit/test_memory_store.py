@@ -95,6 +95,47 @@ def test_unconfigured_is_not_an_error_it_is_a_mode():
     assert store.configured() is True
 
 
+def test_select_all_parses_vector_from_postgrest_string_format():
+    """PostgREST returns pgvector as string "[a,b,c]" not as JSON array."""
+    sink = []
+    payload = [
+        {"id": 1, "fact": "test", "provenance": "user", "embedding": "[0.1,0.2,0.3]", "created_at": "2026-01-01", "last_used_at": "2026-01-01", "use_count": 1},
+        {"id": 2, "fact": "test2", "provenance": "user", "embedding": "[0.5,0.6]", "created_at": "2026-01-01", "last_used_at": "2026-01-01", "use_count": 1},
+    ]
+    store.urlopen = capture(payload, sink)
+    rows = store.select_all()
+    assert rows[0]["embedding"] == [0.1, 0.2, 0.3], f"got {rows[0]['embedding']}"
+    assert rows[1]["embedding"] == [0.5, 0.6], f"got {rows[1]['embedding']}"
+
+
+def test_select_all_parses_empty_vector_string():
+    """Empty vector string "[]" should parse to empty list."""
+    sink = []
+    payload = [
+        {"id": 1, "fact": "test", "provenance": "user", "embedding": "[]", "created_at": "2026-01-01", "last_used_at": "2026-01-01", "use_count": 1},
+    ]
+    store.urlopen = capture(payload, sink)
+    rows = store.select_all()
+    assert rows[0]["embedding"] == [], f"got {rows[0]['embedding']}"
+
+
+def test_touch_does_not_raise_when_backend_dead():
+    """touch() swallows StoreError and logs instead."""
+    def boom(req, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    store.urlopen = boom
+    store.touch([1, 2, 3])  # Should not raise
+
+
+def test_touch_empty_list_makes_no_request():
+    """touch() with empty id list should return early without making a request."""
+    sink = []
+    store.urlopen = capture([], sink)
+    store.touch([])
+    assert len(sink) == 0, f"expected no requests, got {len(sink)}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
