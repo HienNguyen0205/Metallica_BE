@@ -35,6 +35,10 @@ jobs:
       - name: Memory tests
         run: python tests/unit/test_memory.py
 
+      # §22 abuse gate: origin check and both rate-limit windows.
+      - name: Guard tests
+        run: python tests/unit/test_guard.py
+
       # Event contract, §11 permission gate, §22 tool sandboxing.
       - name: Transport and permission tests
         run: python tests/integration/test_stream.py

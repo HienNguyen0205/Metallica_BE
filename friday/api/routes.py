@@ -6,14 +6,15 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import APIError, NotFoundError, RateLimitError
 
 from friday import agent, llm, memory
 from friday.api import dependencies as deps
-from friday.api.dependencies import PENDING
+from friday.api.dependencies import PENDING, guard, require_known_origin
 from friday.api.schemas import Decision, Query
+from friday.core.config import settings
 from friday.events.serializer import sse
 
 # Keep CONFIRM_TIMEOUT_S readable for old imports, but resolve dynamically
@@ -152,7 +153,7 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
     yield sse("done", {})
 
 
-@router.post("/query")
+@router.post("/query", dependencies=[Depends(guard)])
 async def query_endpoint(body: Query) -> StreamingResponse:
     return StreamingResponse(
         run_query(body.query, body.session_id),
@@ -161,7 +162,7 @@ async def query_endpoint(body: Query) -> StreamingResponse:
     )
 
 
-@router.post("/confirm")
+@router.post("/confirm", dependencies=[Depends(require_known_origin)])
 async def confirm_endpoint(body: Decision) -> dict[str, Any]:
     decided = PENDING.get(body.id)
     if decided is None or decided.done():
@@ -177,4 +178,10 @@ async def health() -> dict[str, Any]:
         "planner": llm.configured(),
         "model": llm.model(),
         "endpoint": llm.base_url(),
+        # Reported so a deploy's limits can be read off the running service
+        # rather than inferred from which env vars someone remembered to set.
+        "limits": {
+            "per_client_hourly": settings.rate_limit_per_hour,
+            "global_hourly": settings.global_limit_per_hour,
+        },
     }

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     confirm_timeout_s: float = Field(default=120.0, alias="FRIDAY_CONFIRM_TIMEOUT_S")
 
+    # ---- §22 abuse limits — see api/dependencies.py ----
+    # Sized against the provider's free tier, not against demand: one query is
+    # 2-3 model calls, so 100/hour globally is already the whole daily quota if
+    # sustained. Raise them once the key has a budget behind it.
+    friday_rate_limit_per_hour: int = Field(default=30, alias="FRIDAY_RATE_LIMIT_PER_HOUR")
+    friday_global_limit_per_hour: int = Field(default=100, alias="FRIDAY_GLOBAL_LIMIT_PER_HOUR")
+
     # ---- Derived helpers — read live env so tests that mutate os.environ work ----
     @property
     def llm_api_key(self) -> str | None:
@@ -55,7 +62,10 @@ class Settings(BaseSettings):
     @property
     def allowed_origins(self) -> list[str]:
         raw = os.getenv("FRIDAY_ALLOWED_ORIGINS", self.friday_allowed_origins)
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        # An Origin header never carries a trailing slash, so a value pasted in
+        # as "https://app.example/" would match nothing — here or in the CORS
+        # middleware, which reads this same list.
+        return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
     @property
     def gemini_api_key_live(self) -> str | None:
@@ -79,6 +89,24 @@ class Settings(BaseSettings):
             except ValueError:
                 pass
         return self.confirm_timeout_s
+
+    @property
+    def rate_limit_per_hour(self) -> int:
+        return _int_env("FRIDAY_RATE_LIMIT_PER_HOUR", self.friday_rate_limit_per_hour)
+
+    @property
+    def global_limit_per_hour(self) -> int:
+        return _int_env("FRIDAY_GLOBAL_LIMIT_PER_HOUR", self.friday_global_limit_per_hour)
+
+
+def _int_env(name: str, fallback: int) -> int:
+    raw = os.getenv(name)
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return fallback
 
 
 settings = Settings()  # type: ignore[call-arg]

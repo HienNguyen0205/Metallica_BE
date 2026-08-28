@@ -22,10 +22,15 @@ export GEMINI_API_KEY=...
 The frontend points at `http://localhost:8000` by default; override with
 `NEXT_PUBLIC_FRIDAY_API` in `.env.local`.
 
-`GET /health` reports what the gateway is pointed at:
+`GET /health` reports what the gateway is pointed at, and the caps it is
+enforcing — read off the running service rather than inferred from which env
+vars someone remembered to set:
 
 ```json
-{ "ok": true, "planner": true, "model": "gemini-2.5-flash", "endpoint": "..." }
+{
+  "ok": true, "planner": true, "model": "gemini-2.5-flash", "endpoint": "...",
+  "limits": { "per_client_hourly": 30, "global_hourly": 100 }
+}
 ```
 
 ## §8 Model gateway
@@ -132,6 +137,49 @@ The frontend generates the id per **tab** and keeps it in `sessionStorage`
 (`src/lib/api/fridayClient.ts`): the memory it keys into dies with this process,
 so an id that outlived the tab would point at nothing while implying continuity.
 A client that sends no id gets the old stateless behaviour.
+
+## §22 The gate on /query
+
+`/query` is public, unauthenticated, and every call spends provider quota.
+There is nothing to authenticate *against*: the caller is a static page on a
+CDN, so any secret it could send is in a bundle anyone can read. A key checked
+here would stop only the people who never opened devtools.
+
+So the endpoint is not locked, it is **metered** — `api/dependencies.py`:
+
+| Check | Refusal | What it is for |
+| --- | --- | --- |
+| `Origin` on the allowlist | `403` | another site driving this agent from a visitor's browser |
+| per-caller, 30/hour | `429` + `Retry-After` | one visitor spending the whole allowance |
+| global, 100/hour | `429` + `Retry-After` | everything else, including forged headers |
+
+**The origin check is not the CORS middleware.** CORS stops the *browser* from
+reading a cross-origin response, which happens after the handler has already
+run — on a streaming endpoint that means the model calls were made and paid
+for, and only the answer was discarded. Refusing before the handler is what
+protects the quota.
+
+**The global cap is the one that actually binds.** Per-caller buckets are keyed
+on `X-Forwarded-For`, because behind Render's proxy the peer address is the
+proxy and every visitor would share one bucket. That header is trivially
+forged, so per-caller limits only separate honest callers from each other; the
+number that bounds the bill is the global one. Size it against the key: a query
+is 2-3 model calls, so 100/hour sustained is already a free tier's whole day.
+
+Both windows are checked before either is charged — a request the global cap
+refuses does not quietly consume the caller's own budget.
+
+`/confirm` gets the origin check but not the meter. Its id is a `uuid4` nobody
+can guess, and charging approvals against the query budget would let a
+tool-heavy session run out of turns halfway through its own approval.
+
+A refusal is deliberately **not** something the UI answers with its offline
+demo planner. Unreachable means canned data is better than nothing; refused
+means the service is up and said no, and swapping in an invented number there
+would show the user a plausible answer with no sign it is not a real one. The
+UI raises `OrchestratorRefused` and puts the reason on the HUD instead —
+`Retry-After` is listed in `expose_headers`, or the browser would hide the
+wait from the page.
 
 ## §10 Tools and §11 permissions
 
