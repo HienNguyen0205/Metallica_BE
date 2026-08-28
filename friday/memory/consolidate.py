@@ -16,6 +16,13 @@ log = logging.getLogger("friday.memory")
 CONSOLIDATE_AT_COUNT = 100
 CONSOLIDATE_EVERY_TURNS = 20
 
+#: Ngưỡng theo số ký ức là một mức, không phải một sườn: `run()` không kéo số
+#: đếm xuống một cách chắc chắn ("when unsure, keep it"), nên `len(CACHE) > 100`
+#: đúng ở mọi turn sau đó và sẽ bắn một model call sau *mỗi* câu hỏi — trên một
+#: tier mà nút thắt là request/phút ở khoảng năm query một phút. Cho nó chạy
+#: sớm hơn CONSOLIDATE_EVERY_TURNS, nhưng không bao giờ hai turn liền nhau.
+CONSOLIDATE_MIN_TURNS = 5
+
 #: Trong process và mất khi restart. Chấp nhận được: mất bộ đếm chỉ làm lượt dọn
 #: tới muộn hơn, còn ngưỡng theo số ký ức thì không phụ thuộc nó.
 TURN_COUNTER = 0
@@ -37,7 +44,9 @@ def note_turn() -> None:
 
 
 def should_run() -> bool:
-    return len(lt.CACHE) > CONSOLIDATE_AT_COUNT or TURN_COUNTER >= CONSOLIDATE_EVERY_TURNS
+    if TURN_COUNTER >= CONSOLIDATE_EVERY_TURNS:
+        return True
+    return len(lt.CACHE) > CONSOLIDATE_AT_COUNT and TURN_COUNTER >= CONSOLIDATE_MIN_TURNS
 
 
 async def choose_drops(memories: list[lt.Memory]) -> list[int]:
@@ -68,7 +77,7 @@ async def run() -> int:
         log.warning("consolidation failed; memories left as they were", exc_info=True)
         return 0
 
-    removed = sum(1 for memory_id in drops if lt.forget(memory_id))
+    removed = sum([1 for memory_id in drops if await lt.forget(memory_id)])
     if removed:
         log.info("consolidation dropped %d memories", removed)
     return removed

@@ -6,13 +6,10 @@ nút thắt vốn đã giới hạn ~5 query/phút. Nếu sau này đổi provid
 này trước - cả thiết kế đứng trên nó.
 """
 
-import logging
 import math
 import os
 
 from friday.llm import client
-
-log = logging.getLogger("friday.memory")
 
 #: Gemini hỗ trợ cắt MRL: 3072 chiều gốc xuống 768 vẫn giữ được chất lượng và
 #: đưa mỗi ký ức từ 12KB xuống 3KB.

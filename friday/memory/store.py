@@ -14,13 +14,18 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any
-from urllib.request import urlopen  # noqa: F401 — test thay thẳng tên này
+from urllib.request import urlopen  # test thay thẳng tên này
 
 log = logging.getLogger("friday.memory")
 
 TABLE = "friday_memory"
-COLUMNS = "id,fact,provenance,embedding,created_at,last_used_at,use_count"
+COLUMNS = "id,fact,provenance,embedding,created_at,last_used_at"
 TIMEOUT_S = 10.0
+
+#: Trần số dòng một lần nạp. Phải khớp long_term.MAX_MEMORIES: cache không giữ
+#: nổi nhiều hơn, nên kéo về rồi vứt đi chỉ tốn băng thông. Đặt ở đây chứ không
+#: import: long_term import module này, không có chiều ngược lại.
+MAX_ROWS = 500
 
 
 class StoreError(RuntimeError):
@@ -82,7 +87,9 @@ def _parse_vector(raw: Any) -> list[float]:
 
 
 def select_all() -> list[dict[str, Any]]:
-    rows = _request("GET", f"{TABLE}?select={COLUMNS}") or []
+    # Có thứ tự và có trần: không có chúng, một bảng lớn hơn cache trả về một
+    # tập tuỳ Postgres chọn, nên mỗi lần khởi động FRIDAY nhớ một bộ khác nhau.
+    rows = _request("GET", f"{TABLE}?select={COLUMNS}&order=last_used_at.desc&limit={MAX_ROWS}") or []
     for row in rows:
         row["embedding"] = _parse_vector(row["embedding"])
     return rows
@@ -93,9 +100,7 @@ def insert(fact: str, provenance: str, embedding: list[float]) -> dict[str, Any]
     rows = _request("POST", TABLE, body, prefer="return=representation") or []
     if not rows:
         raise StoreError("insert returned no row")
-    row = rows[0]
-    row["embedding"] = list(embedding)
-    return row
+    return rows[0]
 
 
 def delete(memory_id: int) -> None:
@@ -108,6 +113,9 @@ def touch(ids: list[int]) -> None:
         return
     joined = ",".join(str(int(i)) for i in ids)
     try:
-        _request("PATCH", f"{TABLE}?id=in.({joined})", {"last_used_at": "now()"})
+        # "now", không phải "now()": Postgres nhận chuỗi đặc biệt "now" như một
+        # timestamptz literal, còn "now()" là lời gọi hàm và bị từ chối — một
+        # PATCH 400 mỗi lần recall, nuốt vào một dòng warning.
+        _request("PATCH", f"{TABLE}?id=in.({joined})", {"last_used_at": "now"})
     except StoreError:
-        log.warning("could not update memory usage counters", exc_info=True)
+        log.warning("could not refresh last_used_at", exc_info=True)

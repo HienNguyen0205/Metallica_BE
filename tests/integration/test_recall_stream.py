@@ -7,6 +7,7 @@ import asyncio
 import json
 
 from friday import agent, main
+from friday.api import routes
 from friday.memory import embed as embed_mod
 from friday.memory import long_term as lt
 from friday.schema import VisualizationPlan, VizData
@@ -110,6 +111,48 @@ def test_recall_reaches_agent_run_as_the_memories_argument():
         agent.run = original
 
     assert "thích đơn vị mét" in captured.get("memories", ""), captured
+
+
+def test_a_recall_explosion_still_closes_the_stream():
+    """`state: thinking` đã bay đi trước khi recall chạy.
+
+    Nên nếu recall ném ra ngoài try của run_query, stream kết thúc không
+    `error`, không `done`, và HUD kẹt ở THINKING mãi mãi - đúng cái hỏng mà
+    test_agent_failure_still_closes_the_stream tồn tại để chặn, chỉ khác chỗ
+    xảy ra. Recall phải nằm *trong* try.
+    """
+    stub_planner()
+
+    async def boom(query):
+        raise RuntimeError("recall exploded")
+
+    original, routes.recall_block = routes.recall_block, boom
+    try:
+        events = collect()
+    finally:
+        routes.recall_block = original
+
+    names = [n for n, _ in events]
+    assert "error" in names, names
+    assert names[-1] == "done", names
+
+
+def test_recall_survives_a_failure_that_is_not_an_embedding_error():
+    """"Memory là phần thêm, không bao giờ là điều kiện" phải đúng theo cấu
+    trúc, không phải vì hôm nay mọi callee tình cờ chỉ ném EmbedError.
+
+    Ở đây embedder trả về vector lệch chiều, nên `similarity` ném ValueError từ
+    trong `top_k` - một đường mà một `except EmbedError` hẹp sẽ để lọt thẳng
+    lên run_query.
+    """
+    lt.clear()
+    lt.CACHE.append(lt.Memory(id=1, fact="f", provenance="user", embedding=[1.0, 0.0]))
+
+    async def wrong_width(texts):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    embed_mod.embed = wrong_width
+    assert asyncio.run(main.recall_block("q")) == "", "recall hỏng không được kéo turn theo"
 
 
 def test_memory_is_in_the_declared_event_contract():

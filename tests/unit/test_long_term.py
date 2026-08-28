@@ -3,17 +3,19 @@
     PYTHONPATH=. python tests/unit/test_long_term.py
 """
 
+import asyncio
+
 from friday.memory import long_term as lt
 from friday.memory.embed import normalize
 
 
-def mem(mid, fact, vector, provenance="user", use_count=0, last_used_at="2026-01-01"):
+def mem(mid, fact, vector, provenance="user", created_at="2026-01-01", last_used_at="2026-01-01"):
     return lt.Memory(
         id=mid,
         fact=fact,
         provenance=provenance,
         embedding=normalize(vector),
-        use_count=use_count,
+        created_at=created_at,
         last_used_at=last_used_at,
     )
 
@@ -61,6 +63,20 @@ def test_normalization_is_load_bearing():
     assert cosine_right > cosine_wrong, "chuẩn hoá không đảo được thứ hạng - cosine đang sai"
 
 
+def test_two_vectors_of_different_length_are_an_error_not_a_prefix_match():
+    """zip() cắt về vector ngắn hơn và trả về một con số trông hoàn toàn bình thường.
+
+    FRIDAY_EMBED_MODEL do operator đặt. Trỏ nó vào một provider bỏ qua
+    `dimensions` là mọi dòng đã ghi từ trước bị so trên một khúc đầu, xếp hạng
+    sai, và không có lỗi ở đâu để lần ra.
+    """
+    try:
+        lt.similarity([1.0, 0.0, 0.0], [1.0, 0.0])
+    except ValueError:
+        return
+    raise AssertionError("một vector lệch chiều phải nổ, không được im lặng so khúc đầu")
+
+
 def test_the_cache_is_bounded_and_drops_the_least_recently_used():
     """enforce_cap() phải giữ đúng MAX_MEMORIES mục *mới dùng gần đây nhất*.
 
@@ -80,13 +96,16 @@ def test_the_cache_is_bounded_and_drops_the_least_recently_used():
     không nằm gọn ở đầu hay ở cuối, nên chỉ một cap xén theo *field* mới ra
     đúng đáp số.
     """
+    deleted = []
+    lt.store_delete = deleted.append
+
     lt.clear()
     total = lt.MAX_MEMORIES + 10
     insertion_order = [i for i in range(total) if i % 2 == 0] + [i for i in range(total) if i % 2 == 1]
     for i in insertion_order:
         # last_used_at tăng dần theo id, không theo vị trí chèn - id=0 cũ nhất.
         lt.CACHE.append(mem(i, f"m{i}", [1.0, 0.0], last_used_at=f"2026-01-01T{i:05d}"))
-    lt.enforce_cap()
+    asyncio.run(lt.enforce_cap())
 
     assert len(lt.CACHE) == lt.MAX_MEMORIES, len(lt.CACHE)
 
@@ -100,6 +119,11 @@ def test_the_cache_is_bounded_and_drops_the_least_recently_used():
     survivor_times = [m.last_used_at for m in lt.CACHE]
     dropped_times = [f"2026-01-01T{i:05d}" for i in dropped_ids]
     assert min(survivor_times) > max(dropped_times), (min(survivor_times), max(dropped_times))
+
+    # Trần chỉ áp lên cache thì store phình vô hạn và mục vừa bị loại sẽ sống
+    # lại ở lần khởi động sau, đẩy một mục khác ra thay - tập ký ức xáo lại
+    # sau mỗi deploy. Nên chỗ bị loại phải biến mất khỏi store luôn.
+    assert set(deleted) == dropped_ids, sorted(set(deleted) ^ dropped_ids)
 
 
 def test_the_block_fences_memories_as_data():

@@ -19,7 +19,8 @@ from friday.events.serializer import sse
 from friday.memory import consolidate
 from friday.memory import embed as embed_mod
 from friday.memory import long_term
-from friday.memory.embed import EmbedError
+from friday.memory import store as memory_store
+from friday.memory.store import StoreError
 
 # Keep CONFIRM_TIMEOUT_S readable for old imports, but resolve dynamically
 CONFIRM_TIMEOUT_S = deps.CONFIRM_TIMEOUT_S
@@ -117,14 +118,17 @@ async def recall_block(query: str) -> str:
         return ""
     try:
         vectors = await embed_mod.embed([query])
-    except EmbedError:
-        log.warning("recall skipped: embedding unavailable", exc_info=True)
+        hits = long_term.top_k(vectors[0], long_term.TOP_K_DEFAULT)
+        if hits:
+            asyncio.get_running_loop().run_in_executor(None, _touch, [m.id for m in hits])
+        return long_term.render_block(hits)
+    except Exception:
+        # Bắt rộng có chủ ý: "memory là phần thêm, không bao giờ là điều kiện"
+        # phải đúng theo cấu trúc, không phải vì hôm nay tình cờ mọi callee chỉ
+        # ném EmbedError. Vector lệch chiều, cache hỏng, top_k đổi ngày mai —
+        # không cái nào được phép giết một turn.
+        log.warning("recall skipped", exc_info=True)
         return ""
-
-    hits = long_term.top_k(vectors[0], long_term.TOP_K_DEFAULT)
-    if hits:
-        asyncio.get_running_loop().run_in_executor(None, _touch, [m.id for m in hits])
-    return long_term.render_block(hits)
 
 
 def _touch(ids: list[int]) -> None:
@@ -155,6 +159,7 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
             PENDING.pop(request_id, None)
 
     failure: BaseException | None = None
+    memories = ""
 
     async def pump() -> None:
         nonlocal failure
@@ -166,8 +171,7 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
         finally:
             await events.put(None)
 
-    memories = await recall_block(query)
-    task = asyncio.create_task(pump())
+    task: asyncio.Task | None = None
     stage = "agent"
     # §18 — the component the last preview already materialised. The planner is
     # pinned to it rather than allowed to re-decide: a preview is derived from
@@ -177,6 +181,10 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
     # build and then get replaced by gauges for no reason they can see.
     pinned_type: str | None = None
     try:
+        # Trong try: `state: thinking` đã gửi đi rồi, nên bất cứ gì ném ra
+        # ngoài đây sẽ kết thúc stream không `error`, không `done`, và HUD kẹt.
+        memories = await recall_block(query)
+        task = asyncio.create_task(pump())
         while True:
             event = await events.get()
             if event is None:
@@ -223,7 +231,7 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
         yield sse("done", {})
         return
     finally:
-        if not task.done():
+        if task is not None and not task.done():
             task.cancel()
 
     yield sse("state", {"state": "visualizing"})
@@ -267,26 +275,44 @@ async def confirm_endpoint(body: Decision) -> dict[str, Any]:
 async def list_memory() -> dict[str, Any]:
     """Mọi thứ FRIDAY nhớ. Không tính vào rate limit — không có model call nào.
 
+    Đọc thẳng từ store chứ không từ cache. Đây là màn hình xem lại, không phải
+    đường nóng, và toàn bộ giá trị của nó là cho thấy cái gì thật sự còn nằm
+    đó: sau một lần khởi động lỗi, cache rỗng trong khi store đầy, và một danh
+    sách trống là câu trả lời sai nhất có thể cho "trang web kia đã ghi gì".
+    Store chết thì lùi về cache — và nói ra bằng `from_cache`.
+
     Vector không nằm trong response: 768 số float không nói gì với người đọc và
     làm payload phình lên vô ích.
     """
+    try:
+        rows = await asyncio.to_thread(memory_store.select_all)
+    except StoreError:
+        log.warning("memory listing fell back to the cache", exc_info=True)
+        return {
+            "memories": [
+                {
+                    "id": m.id,
+                    "fact": m.fact,
+                    "provenance": m.provenance,
+                    "created_at": m.created_at,
+                    "last_used_at": m.last_used_at,
+                }
+                for m in long_term.CACHE
+            ],
+            "from_cache": True,
+        }
     return {
         "memories": [
-            {
-                "id": m.id,
-                "fact": m.fact,
-                "provenance": m.provenance,
-                "use_count": m.use_count,
-                "last_used_at": m.last_used_at,
-            }
-            for m in long_term.CACHE
-        ]
+            {key: row.get(key) for key in ("id", "fact", "provenance", "created_at", "last_used_at")}
+            for row in rows
+        ],
+        "from_cache": False,
     }
 
 
 @router.delete("/memory/{memory_id}", dependencies=[Depends(require_known_origin)])
 async def forget_memory(memory_id: int) -> dict[str, Any]:
-    return {"ok": long_term.forget(memory_id)}
+    return {"ok": await long_term.forget(memory_id)}
 
 
 @router.get("/health")

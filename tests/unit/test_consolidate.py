@@ -50,11 +50,32 @@ def test_enough_turns_trigger_it():
     assert consolidate.should_run() is True
 
 
-def test_enough_memories_trigger_it_regardless_of_turns():
-    seed(consolidate.CONSOLIDATE_AT_COUNT + 1)
-    # Bộ đếm lượt mất khi restart; ngưỡng theo số ký ức thì không, nên nó phải
-    # tự đủ để kích hoạt.
+def test_a_full_cache_triggers_it_sooner_but_never_two_turns_running():
+    """Ngưỡng theo số ký ức là một *mức*, không phải một *sườn*.
+
+    `run()` không kéo được số đếm xuống một cách chắc chắn - prompt của nó nói
+    "when unsure, keep it" - nên `len(CACHE) > 100` đúng ở turn này thì cũng
+    đúng ở turn sau. Để nó tự đủ điều kiện là bắn thêm một model call sau *mỗi*
+    câu hỏi, mang cả cache làm prompt, trên một tier mà nút thắt là request mỗi
+    phút ở khoảng năm query một phút.
+    """
+    seed(consolidate.CONSOLIDATE_AT_COUNT + 1)  # seed() đặt lại bộ đếm về 0
+    assert consolidate.should_run() is False, "cache đầy không được bắn sau mỗi turn"
+
+    for _ in range(consolidate.CONSOLIDATE_MIN_TURNS):
+        consolidate.note_turn()
     assert consolidate.should_run() is True
+
+    # ...nhưng vẫn sớm hơn nhịp thường, nếu không thì ngưỡng số ký ức vô nghĩa.
+    assert consolidate.CONSOLIDATE_MIN_TURNS < consolidate.CONSOLIDATE_EVERY_TURNS
+
+
+def test_a_small_cache_still_waits_the_full_interval():
+    """Nhịp ngắn là đặc quyền của cache đầy, không phải nhịp mới cho mọi người."""
+    seed(3)
+    for _ in range(consolidate.CONSOLIDATE_MIN_TURNS):
+        consolidate.note_turn()
+    assert consolidate.should_run() is False
 
 
 def test_a_dead_model_does_not_take_anything_down_with_it():

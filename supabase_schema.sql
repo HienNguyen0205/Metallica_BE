@@ -7,8 +7,7 @@ create table if not exists friday_memory (
   provenance   text        not null check (provenance in ('user', 'tool')),
   embedding    vector(768) not null,
   created_at   timestamptz not null default now(),
-  last_used_at timestamptz not null default now(),
-  use_count    int         not null default 0
+  last_used_at timestamptz not null default now()
 );
 
 -- Chưa có chỉ mục vector: tìm kiếm tương đồng chạy trong process trên cache RAM

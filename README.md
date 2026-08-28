@@ -184,10 +184,25 @@ At a few hundred memories this is sub-millisecond; the schema's `vector(768)`
 column is ready for `pgvector`/`ivfflat` the day the table reaches the
 thousands or the service stops being one process — whichever comes first.
 
+**Frequency-based ranking was cut.** The schema carried a `use_count`
+column and the code selected, stored and returned it, but nothing ever
+incremented it — it was a zero on every row and in every response, which is
+worse than absent because it reads like a measurement. It is gone from the
+table, the dataclass and `GET /memory`. To bring it back: add the column,
+have `store.touch()` PATCH `use_count = use_count + 1` (PostgREST cannot
+express that, so it needs an `rpc` function or a raw `SELECT`-then-`PATCH`),
+carry it on `Memory`, and give `top_k` a term that mixes it with similarity.
+Recency (`last_used_at`) already covers the eviction ordering it was
+originally wanted for.
+
 **Consolidation runs after `done`, never in the request path.** A background
 task (`consolidate.run`, kicked off from `run_query` right after the `done`
 event) asks the model to drop duplicate, contradicted, or stale facts once
-every 20 turns or once the cache passes 100 memories. It costs a model call,
+every 20 turns, or every 5 turns once the cache passes 100 memories. The
+count threshold is a level, not an edge — `run()` cannot reliably bring the
+count back under it, since the prompt says to keep anything it is unsure
+about — so it is gated behind a turn counter of its own; without that gate a
+cache of 101 facts would spend a model call after every single question. It costs a model call,
 so it deliberately never sits between the user and their answer.
 
 **`remember` escalates prompt injection from a one-turn problem to a

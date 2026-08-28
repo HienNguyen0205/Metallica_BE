@@ -22,8 +22,8 @@ def stub():
     lt.clear()
     lt.store_configured = lambda: True
     lt.store_select_all = lambda: [
-        {"id": 1, "fact": "thích đơn vị mét", "provenance": "user", "embedding": [1.0, 0.0], "use_count": 0, "last_used_at": "2026-01-01"},
-        {"id": 2, "fact": "đọc trên mạng", "provenance": "tool", "embedding": [0.0, 1.0], "use_count": 0, "last_used_at": "2026-01-01"},
+        {"id": 1, "fact": "thích đơn vị mét", "provenance": "user", "embedding": [1.0, 0.0], "created_at": "2026-01-01", "last_used_at": "2026-01-01"},
+        {"id": 2, "fact": "đọc trên mạng", "provenance": "tool", "embedding": [0.0, 1.0], "created_at": "2026-01-01", "last_used_at": "2026-01-01"},
     ]
 
 

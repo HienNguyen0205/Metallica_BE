@@ -10,15 +10,20 @@ turn.
 Khi nào nên chuyển xuống pgvector: khi số ký ức lên hàng nghìn, hoặc khi service
 không còn là một process. Cột `vector(768)` đã sẵn cho việc đó.
 
-Đây là phần thuần tính toán - không mạng, không model, không database. Nạp và
-ghi (`friday.memory.store`) là việc của một task khác.
+Xếp hạng và render là thuần tính toán; `load` / `add` / `forget` thì không —
+chúng gọi embedding (model) và Supabase (mạng, database) qua
+`friday.memory.embed` và `friday.memory.store`. Mọi lời gọi chặn ở đây đi qua
+`asyncio.to_thread`: service chỉ có một process, nên một Supabase chậm mà chạy
+thẳng trên event loop sẽ treo mọi SSE stream đang mở.
 """
 
+import asyncio
 import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 
 from friday.memory.embed import EmbedError, embed
+from friday.memory.store import MAX_ROWS as store_max_rows
 from friday.memory.store import StoreError
 from friday.memory.store import configured as store_configured
 from friday.memory.store import delete as store_delete
@@ -32,7 +37,8 @@ log = logging.getLogger("friday.memory")
 #: quan, xem phân bố điểm, chọn ngưỡng tách được hai nhóm.
 SIMILARITY_FLOOR = 0.6
 
-MAX_MEMORIES = 500
+#: Một con số, hai chỗ dùng: store chỉ kéo về đúng chừng này dòng.
+MAX_MEMORIES = store_max_rows
 MAX_FACT_CHARS = 300
 RECALL_BLOCK_MAX_CHARS = 1500
 TOP_K_DEFAULT = 5
@@ -44,7 +50,7 @@ class Memory:
     fact: str
     provenance: str
     embedding: list[float]
-    use_count: int = 0
+    created_at: str = ""
     last_used_at: str = ""
 
 
@@ -62,6 +68,12 @@ def similarity(a: list[float], b: list[float]) -> float:
     Trên vector thô đây chỉ là tích vô hướng: vẫn ra một con số, vẫn xếp hạng
     được, và xếp sai theo độ dài thay vì theo hướng.
     """
+    if len(a) != len(b):
+        # zip() sẽ cắt về vector ngắn hơn và trả về một con số trông bình
+        # thường. FRIDAY_EMBED_MODEL do operator đặt: trỏ nó vào một provider
+        # bỏ qua `dimensions` là mọi dòng cũ bị so trên một khúc đầu và xếp
+        # hạng sai mà không có lỗi ở đâu cả.
+        raise ValueError(f"embedding length mismatch: {len(a)} vs {len(b)}")
     return sum(x * y for x, y in zip(a, b))
 
 
@@ -72,12 +84,22 @@ def top_k(query_vector: list[float], k: int = TOP_K_DEFAULT) -> list[Memory]:
     return [m for _, m in hits[:k]]
 
 
-def enforce_cap() -> None:
-    """Giữ cache trong trần, bỏ cái lâu không dùng nhất trước."""
+async def enforce_cap() -> None:
+    """Giữ trần, bỏ cái lâu không dùng nhất trước — cả trong cache lẫn store.
+
+    Trần chỉ áp lên cache thì store phình vô hạn và mục đã loại sống lại ở lần
+    khởi động sau, đẩy một mục khác ra thay: tập ký ức xáo lại sau mỗi deploy.
+    """
     if len(CACHE) <= MAX_MEMORIES:
         return
     CACHE.sort(key=lambda m: m.last_used_at, reverse=True)
+    evicted = CACHE[MAX_MEMORIES:]
     del CACHE[MAX_MEMORIES:]
+    for memory in evicted:
+        try:
+            await asyncio.to_thread(store_delete, memory.id)
+        except StoreError:
+            log.warning("evicted memory %s stayed in the store", memory.id, exc_info=True)
 
 
 def render_block(memories: list[Memory]) -> str:
@@ -143,7 +165,7 @@ def _row_to_memory(row: dict) -> Memory:
         fact=row["fact"],
         provenance=row.get("provenance", "user"),
         embedding=row.get("embedding") or [],
-        use_count=int(row.get("use_count", 0)),
+        created_at=str(row.get("created_at", "")),
         last_used_at=str(row.get("last_used_at", "")),
     )
 
@@ -155,36 +177,41 @@ async def load() -> int:
         log.info("long-term memory disabled: SUPABASE_URL / SUPABASE_SERVICE_KEY not set")
         return 0
     try:
-        rows = store_select_all()
+        rows = await asyncio.to_thread(store_select_all)
     except StoreError:
         log.warning("could not load long-term memory; running without it", exc_info=True)
         return 0
 
     CACHE.extend(_row_to_memory(row) for row in rows)
-    enforce_cap()
+    await enforce_cap()
     log.info("loaded %d memories", len(CACHE))
     return len(CACHE)
 
 
 async def add(fact: str, provenance: str) -> Memory | None:
     vectors = await embed([fact])
-    row = store_insert(fact, provenance, vectors[0])
+    row = await asyncio.to_thread(store_insert, fact, provenance, vectors[0])
     memory = _row_to_memory({**row, "embedding": vectors[0]})
     CACHE.append(memory)
-    enforce_cap()
+    await enforce_cap()
     return memory
 
 
-def forget(memory_id: int) -> bool:
-    """Xoá vĩnh viễn. Trả False nếu không có ký ức nào mang id đó."""
-    before = len(CACHE)
-    CACHE[:] = [m for m in CACHE if m.id != memory_id]
-    if len(CACHE) == before:
-        return False
+async def forget(memory_id: int) -> bool:
+    """Xoá vĩnh viễn khỏi store, rồi dọn cache. False nghĩa là store từ chối.
+
+    Store trước, cache sau, và không phụ thuộc cache: xoá là biện pháp bảo vệ
+    duy nhất trong thiết kế này, nên nó phải chạm tới cái thật sự bền. Một id
+    đã bị `enforce_cap` loại hoặc chưa từng được `load` kéo về vẫn phải xoá
+    được, và một store từ chối không bao giờ được báo là thành công — nếu
+    không, operator thấy dòng đó quay lại sau lần khởi động kế tiếp.
+    """
     try:
-        store_delete(memory_id)
+        await asyncio.to_thread(store_delete, memory_id)
     except StoreError:
-        log.warning("memory %s dropped from cache but not from the store", memory_id, exc_info=True)
+        log.warning("could not delete memory %s from the store", memory_id, exc_info=True)
+        return False
+    CACHE[:] = [m for m in CACHE if m.id != memory_id]
     return True
 
 
