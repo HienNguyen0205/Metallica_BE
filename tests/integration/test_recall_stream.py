@@ -78,6 +78,40 @@ def test_the_memory_event_reaches_the_stream():
     assert payload["fact"] == "đã học" and payload["provenance"] == "user"
 
 
+def test_recall_reaches_agent_run_as_the_memories_argument():
+    """Chứng minh khối recall thực sự bay tới agent.run, không chỉ tồn tại lẻ loi.
+
+    Xoá tham số `memories` khỏi lời gọi agent.run trong pump() (hoặc bỏ nó khỏi
+    system prompt trong agent.py) và mọi test khác vẫn xanh — FRIDAY âm thầm
+    không bao giờ nhớ gì, trông y hệt "không có ký ức liên quan". Test này bắt
+    đúng chỗ hở đó bằng cách bắt lấy đối số `memories` mà agent.run nhận được.
+    """
+    stub_planner()
+    lt.clear()
+    lt.CACHE.append(lt.Memory(id=1, fact="thích đơn vị mét", provenance="user", embedding=[1.0, 0.0]))
+
+    async def fake_embed(texts):
+        return [[1.0, 0.0] for _ in texts]
+
+    embed_mod.embed = fake_embed
+
+    captured = {}
+
+    async def capturing_agent(query, approve, result, history=(), memories=""):
+        captured["memories"] = memories
+        result.text = "ok"
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    original, agent.run = agent.run, capturing_agent
+    try:
+        collect("đo bằng gì")
+    finally:
+        agent.run = original
+
+    assert "thích đơn vị mét" in captured.get("memories", ""), captured
+
+
 def test_memory_is_in_the_declared_event_contract():
     with open("contracts/events.json", encoding="utf-8") as fh:
         contract = json.load(fh)
