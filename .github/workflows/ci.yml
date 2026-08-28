@@ -39,6 +39,10 @@ jobs:
       - name: Transport and permission tests
         run: python tests/integration/test_stream.py
 
+      # §10 web search: missing key, provider failure, result trimming.
+      - name: Web search tool tests
+        run: python tests/integration/test_search.py
+
       # The real agent loop and planner against a local fake provider.
       # No API key, no network, no cost.
       - name: Model gateway tests

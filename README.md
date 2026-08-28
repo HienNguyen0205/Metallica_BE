@@ -144,6 +144,7 @@ say in its own permissions.
 | -------------------- | ---- | ----------------------------------------- |
 | `get_system_metrics` | low  | reads host CPU / memory / disk (psutil)   |
 | `get_process_list`   | low  | top processes by memory share             |
+| `search_web`         | low  | public web search, three providers in turn |
 | `write_note`         | high | writes a markdown file under `notes/`     |
 
 `get_process_list` ranks by memory, not CPU: `cpu_percent` reads 0.0 the first
@@ -158,6 +159,45 @@ is refused and the model is told it was denied.
 Per §22 there is no shell tool, no `eval`, and no arbitrary-path write.
 `write_note` sanitises the model's string to a bare stem and rebuilds the path
 itself, so nothing the model sends is ever used as a path component verbatim.
+
+`search_web` is the only tool that reaches off this machine, and the only one
+that puts text written by strangers into the model's context — a
+prompt-injection surface by construction. The containment is the §11 gate rather
+than filtering: every consequential tool is `risk="high"` and blocks on a human,
+so a page instructing FRIDAY to write a note still has to get past the operator.
+
+Three providers are tried in order, each falling through on failure:
+
+| Order | Provider | Credentials | Free allowance |
+| --- | --- | --- | --- |
+| 1 | Google Programmable Search | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | 100/day, **resets daily** |
+| 2 | Tavily | `TAVILY_API_KEY` | fixed credit balance |
+| 3 | DuckDuckGo | none | unlimited but rate-limited |
+
+Google leads on quota shape, not answer quality — Tavily returns extracted page
+text and Google only snippets. But Google's hundred come back every morning
+while Tavily's credits, once spent, stay spent, so the renewable allowance goes
+first and the finite one is held in reserve for the days it has run out.
+
+Falling through on **failure** rather than only on a missing key is the whole
+point: a balance runs out mid-conversation, and what arrives then is a 401.
+
+With nothing configured search still works, on a scrape of DuckDuckGo's HTML
+endpoint. Measured, that serves roughly a dozen requests before answering every
+query with a captcha for several minutes, and it mixes sponsored results in
+among the real ones — filtered here, because an advert summarised into an answer
+is indistinguishable from a fact. Treat it as the tail of the chain, not a
+plan: every measurement above ran from a residential connection, and search
+engines refuse datacenter addresses far more readily, so on a deployed host it
+may be blocked from the first call.
+
+Results are trimmed to 5 items of 600 characters. That is a context budget, not
+a display choice: tool output is replayed on every later turn of the same
+conversation.
+
+Requests go out on stdlib `urllib.request` in a thread. `httpx` is not a
+declared dependency here — it arrives only under `openai`, which vendors it as
+`httpx2`, having renamed it once already.
 
 `get_system_metrics` exists mainly so the gauges show measurements. Without a
 tool the planner has nothing but the model's prior, and a chart of invented
@@ -200,6 +240,7 @@ directory on `sys.path`, not the working directory:
 
 ```bash
 PYTHONPATH=. ./.venv/Scripts/python.exe tests/unit/test_memory.py
+PYTHONPATH=. ./.venv/Scripts/python.exe tests/integration/test_search.py
 PYTHONPATH=. ./.venv/Scripts/python.exe tests/integration/test_stream.py
 PYTHONPATH=. ./.venv/Scripts/python.exe tests/integration/test_provider.py
 ```
@@ -212,6 +253,10 @@ hostile note name cannot escape `notes/`. Model calls are stubbed.
 `test_memory.py` covers §15: that prior exchanges actually reach the model's
 message list in order, that two sessions cannot see each other, that a failed
 turn is not recorded, and that both caps hold.
+
+`test_search.py` covers §10 web search against a local fake provider: a missing
+key degrading to an error instead of an exception (and making no network call to
+discover it), a provider 401 doing the same, and result trimming.
 
 `test_provider.py` runs the **real** agent loop and planner against a local
 fake OpenAI-compatible server: the tool-call round trip, evidence reaching the
