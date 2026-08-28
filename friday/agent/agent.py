@@ -122,11 +122,10 @@ async def run(
 
             long_term.mark_tool_used(tool.name)
 
-            if tool.name == "remember" and "remembered" in output:
-                yield AgentEvent(
-                    "memory",
-                    {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
-                )
+            if tool.name == "remember":
+                event = _memory_event(output)
+                if event is not None:
+                    yield event
 
             if tool.preview and "error" not in output:
                 try:
@@ -144,11 +143,11 @@ async def run(
     result.text = "I wasn't able to finish that within the step budget."
 
 
-async def emit_memory_event(output: dict) -> AsyncIterator[AgentEvent]:
-    """Một kết quả `remember` thành một AgentEvent. Tách ra để test được mà
-    không phải dựng cả vòng agent."""
-    if "remembered" in output:
-        yield AgentEvent(
-            "memory",
-            {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
-        )
+def _memory_event(output: dict) -> AgentEvent | None:
+    """Một kết quả `remember` thành một AgentEvent, hoặc None nếu tool đó lỗi."""
+    if "remembered" not in output:
+        return None
+    return AgentEvent(
+        "memory",
+        {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
+    )
