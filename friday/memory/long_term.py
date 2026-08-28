@@ -114,21 +114,27 @@ def render_block(memories: list[Memory]) -> str:
     )
 
 
-#: Tool đã chạy trong turn hiện tại. ContextVar chứ không phải biến module: mỗi
-#: query là một asyncio.Task riêng và context được sao chép khi tạo task, nên
-#: hai query chạy song song không giẫm lên nhau.
-TURN_TOOLS: ContextVar[set[str]] = ContextVar("turn_tools", default=set())
+#: Tool đã chạy trong turn hiện tại. Default là None chứ không phải set():
+#: một set() làm giá trị mặc định được tạo đúng một lần lúc import và dùng
+#: chung cho mọi context chưa gọi .set(), nên mark_tool_used sẽ mutate cùng một
+#: object cho mọi turn — đúng thứ ContextVar sinh ra để chặn.
+TURN_TOOLS: ContextVar[set[str] | None] = ContextVar("turn_tools", default=None)
 
 #: Tool duy nhất đưa chữ do người lạ viết vào context.
 UNTRUSTED_TOOLS = {"search_web"}
 
 
 def mark_tool_used(name: str) -> None:
-    TURN_TOOLS.get().add(name)
+    tools = TURN_TOOLS.get()
+    if tools is None:
+        tools = set()
+        TURN_TOOLS.set(tools)
+    tools.add(name)
 
 
 def current_provenance() -> str:
-    return "tool" if TURN_TOOLS.get() & UNTRUSTED_TOOLS else "user"
+    tools = TURN_TOOLS.get() or set()
+    return "tool" if tools & UNTRUSTED_TOOLS else "user"
 
 
 def _row_to_memory(row: dict) -> Memory:

@@ -105,6 +105,19 @@ def test_forget_removes_it_from_both_places():
     assert lt.forget(999) is False
 
 
+def test_a_mark_made_without_a_prior_set_does_not_survive_a_turn_reset():
+    """The ContextVar default must not be one shared mutable set.
+
+    If it were, mark_tool_used would mutate that single shared object and the
+    mark would outlive any reset — poisoning every context, forever, that
+    never called .set() itself.
+    """
+    stub()
+    lt.mark_tool_used("search_web")  # no TURN_TOOLS.set(...) beforehand
+    lt.TURN_TOOLS.set(None)  # the reset a new turn performs
+    assert lt.current_provenance() == "user", "mark leaked through the shared default"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
