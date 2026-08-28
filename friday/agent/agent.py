@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
 from friday import llm
+from friday.memory import long_term
 from friday.tools.registry import REGISTRY, api_tools
 
 from .state import AgentEvent, AgentResult
@@ -57,6 +58,9 @@ async def run(
     history: Sequence[dict[str, str]] = (),
 ) -> AsyncIterator[AgentEvent]:
     api = llm.client()
+    # Provenance của ký ức đọc từ đây. Set mới mỗi turn để hai query song song
+    # không thấy tool của nhau.
+    long_term.TURN_TOOLS.set(set())
     # §15 — prior exchanges sit between the system prompt and the new question,
     # which is what lets "and the disk?" resolve to anything.
     messages: list[dict[str, Any]] = [
@@ -116,6 +120,14 @@ async def run(
 
             result.evidence.append({"tool": tool.name, "output": output})
 
+            long_term.mark_tool_used(tool.name)
+
+            if tool.name == "remember" and "remembered" in output:
+                yield AgentEvent(
+                    "memory",
+                    {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
+                )
+
             if tool.preview and "error" not in output:
                 try:
                     yield AgentEvent("preview", tool.preview(output))
@@ -130,3 +142,13 @@ async def run(
 
     log.warning("hit MAX_TURNS without a final answer")
     result.text = "I wasn't able to finish that within the step budget."
+
+
+async def emit_memory_event(output: dict) -> AsyncIterator[AgentEvent]:
+    """Một kết quả `remember` thành một AgentEvent. Tách ra để test được mà
+    không phải dựng cả vòng agent."""
+    if "remembered" in output:
+        yield AgentEvent(
+            "memory",
+            {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
+        )

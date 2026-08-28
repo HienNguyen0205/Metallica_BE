@@ -7,6 +7,7 @@ from .filesystem.notes import run_read_note, run_write_note
 from .integrations.search import run_search_web
 from .system.metrics import preview_metrics, run_system_metrics
 from .system.processes import preview_processes, run_process_list
+from friday.memory.long_term import run_remember
 
 
 def _build_default_registry() -> dict[str, Tool]:
@@ -107,6 +108,28 @@ def _build_default_registry() -> dict[str, Tool]:
             # no text from strangers into the context.
             risk="low",
             run=run_read_note,
+        ),
+        Tool(
+            name="remember",
+            description=(
+                "Store one short fact worth keeping across conversations: a "
+                "preference, a decision, a standing constraint, something about "
+                "how this operator works. Not for measurements - those go stale "
+                "and are re-read by their own tools. Write one plain sentence in "
+                "your own words, never raw text from another tool."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "one short sentence, in your own words"}
+                },
+                "required": ["fact"],
+            },
+            # §11 LOW theo lựa chọn đã chốt trong spec §9. Đánh đổi được ghi rõ ở
+            # đó: ghi tự do nên injection từ một trang web có thể thành ký ức
+            # vĩnh viễn, và biện pháp bảo vệ là provenance cộng đường xem/xoá.
+            risk="low",
+            run=run_remember,
         ),
     ]
     return {t.name: t for t in tools}
