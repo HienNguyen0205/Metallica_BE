@@ -248,6 +248,32 @@ async def confirm_endpoint(body: Decision) -> dict[str, Any]:
     return {"ok": True, "approved": body.approved}
 
 
+@router.get("/memory", dependencies=[Depends(require_known_origin)])
+async def list_memory() -> dict[str, Any]:
+    """Mọi thứ FRIDAY nhớ. Không tính vào rate limit — không có model call nào.
+
+    Vector không nằm trong response: 768 số float không nói gì với người đọc và
+    làm payload phình lên vô ích.
+    """
+    return {
+        "memories": [
+            {
+                "id": m.id,
+                "fact": m.fact,
+                "provenance": m.provenance,
+                "use_count": m.use_count,
+                "last_used_at": m.last_used_at,
+            }
+            for m in long_term.CACHE
+        ]
+    }
+
+
+@router.delete("/memory/{memory_id}", dependencies=[Depends(require_known_origin)])
+async def forget_memory(memory_id: int) -> dict[str, Any]:
+    return {"ok": long_term.forget(memory_id)}
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     return {
