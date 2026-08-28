@@ -84,6 +84,7 @@ def test_it_drops_what_the_model_names():
 
 
 def test_choose_drops_parses_string_ids_into_ints():
+    consolidate.choose_drops = _REAL_CHOOSE_DROPS
     # The model replies with ids as JSON strings, same as any real chat
     # completion would — this is what makes `int(i)` in choose_drops load
     # bearing rather than a no-op.
