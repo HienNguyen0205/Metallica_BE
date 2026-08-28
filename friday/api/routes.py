@@ -57,6 +57,44 @@ log = logging.getLogger("friday")
 router = APIRouter()
 
 
+def quota_detail(err: Exception) -> str:
+    """Which limit the provider refused on, and when it clears.
+
+    This used to read "the API key is over quota" for every 429, which was
+    wrong in the common case and expensively so: the free tier's binding limit
+    is requests *per minute*, and one query spends two or three of them, so a
+    normal run trips it at around the sixth question. Someone reading "over
+    quota" goes looking at billing for a wall that clears in twelve seconds.
+
+    Every field is optional. Only Gemini's OpenAI shim is known to send this
+    shape, and it wraps the object in a list; anything else falls through to
+    the bare message rather than guessing.
+    """
+    body = getattr(err, "body", None)
+    if isinstance(body, list):
+        body = body[0] if body else None
+    if not isinstance(body, dict):
+        return ""
+
+    quota_id = ""
+    retry = ""
+    for entry in (body.get("error") or {}).get("details") or []:
+        if not isinstance(entry, dict):
+            continue
+        for violation in entry.get("violations") or []:
+            quota_id = violation.get("quotaId") or quota_id
+        retry = entry.get("retryDelay") or retry
+
+    if "PerMinute" in quota_id:
+        window = " - requests-per-minute limit, not the daily quota"
+    elif "PerDay" in quota_id:
+        window = " - the daily quota for this model is spent"
+    else:
+        window = ""
+
+    return f"{window}{f'; retry in {retry}' if retry else ''}"
+
+
 async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[str]:
     yield sse("state", {"state": "thinking"})
 
@@ -92,6 +130,13 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
 
     task = asyncio.create_task(pump())
     stage = "agent"
+    # §18 — the component the last preview already materialised. The planner is
+    # pinned to it rather than allowed to re-decide: a preview is derived from
+    # the tool's own output shape without a model call, so it is both right and
+    # the same every run, while the planner re-reads the same JSON and reaches a
+    # different conclusion often enough to be visible — the user watches bars
+    # build and then get replaced by gauges for no reason they can see.
+    pinned_type: str | None = None
     try:
         while True:
             event = await events.get()
@@ -99,6 +144,7 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
                 break
 
             if event.kind == "preview":
+                pinned_type = event.payload.get("type") or pinned_type
                 yield sse("viz", {"animation": "materialize", "interaction": "none", **event.payload})
                 continue
 
@@ -109,18 +155,18 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
 
         stage = "planner"
         plan_fn = await _get_plan()
-        result = await plan_fn(query, outcome.text, outcome.evidence)
+        result = await plan_fn(query, outcome.text, outcome.evidence, pinned_type)
     except NotFoundError:
         log.exception("model %r not available at %s", llm.model(), llm.base_url())
         yield sse("error", {"message": f"model '{llm.model()}' unavailable at this endpoint"})
         yield sse("state", {"state": "error"})
         yield sse("done", {})
         return
-    except RateLimitError:
+    except RateLimitError as err:
         log.exception("provider rate limit hit for model %r", llm.model())
         yield sse(
             "error",
-            {"message": f"provider rate limit reached ({stage}) - the API key is over quota"},
+            {"message": f"provider rate limit reached ({stage}){quota_detail(err)}"},
         )
         yield sse("state", {"state": "error"})
         yield sse("done", {})

@@ -36,7 +36,7 @@ def run_turn(query: str, session: str | None, answer: str) -> list[dict]:
         return
         yield  # pragma: no cover — makes this an async generator
 
-    async def fake_plan(q, a, evidence):
+    async def fake_plan(q, a, evidence, pinned_type=None):
         return PLAN
 
     agent_original, agent.run = agent.run, fake_agent

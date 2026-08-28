@@ -39,6 +39,14 @@ jobs:
       - name: Guard tests
         run: python tests/unit/test_guard.py
 
+      # The 429 message must name which limit refused the call.
+      - name: Quota detail tests
+        run: python tests/unit/test_quota_detail.py
+
+      # read_note: listing, reading, path confinement, and that it stays low-risk.
+      - name: Read note tests
+        run: python tests/unit/test_read_note.py
+
       # Event contract, §11 permission gate, §22 tool sandboxing.
       - name: Transport and permission tests
         run: python tests/integration/test_stream.py

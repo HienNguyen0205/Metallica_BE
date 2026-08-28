@@ -33,10 +33,19 @@ def collect(query: str = "q") -> list[tuple[str, dict]]:
     return asyncio.run(drain())
 
 
-def stub_planner():
-    async def fake_plan(query, answer, evidence):
-        return PLAN
+#: What the last fake_plan call was pinned to, for the assertion below.
+PINNED: list[str | None] = []
 
+
+def stub_planner():
+    async def fake_plan(query, answer, evidence, pinned_type=None):
+        PINNED.append(pinned_type)
+        # The real planner is pinned through its JSON schema, so a pinned type
+        # is one it cannot return anything else for. Mirror that here, or this
+        # stub keeps asserting a swap production can no longer produce.
+        return PLAN.model_copy(update={"type": pinned_type}) if pinned_type else PLAN
+
+    PINNED.clear()
     main.plan = fake_plan
 
 
@@ -67,6 +76,8 @@ def test_tool_flow_event_order() -> None:
 
     viz = next(p for n, p in events if n == "viz")
     assert viz["type"] == "radial_gauge"
+    # No preview in this flow, so the planner is left free to choose.
+    assert PINNED == [None], PINNED
     assert "answer" not in viz, "the spoken line rides its own event"
 
     # the agent's own words win over the planner's restatement
@@ -101,7 +112,11 @@ def test_preview_reaches_the_ui_before_the_planner_runs() -> None:
     vizzes = [p for n, p in events if n == "viz"]
     # two previews plus the planner's final spec — a sequence, not one payload
     assert len(vizzes) == 3, [v["title"] for v in vizzes]
-    assert [v["type"] for v in vizzes] == ["radial_gauge", "bar_3d", "radial_gauge"]
+    # The final spec keeps the component the last preview already materialised.
+    # Letting the planner re-decide made the UI build bars and then replace them
+    # with gauges on the same data, which reads as a bug rather than a refinement.
+    assert [v["type"] for v in vizzes] == ["radial_gauge", "bar_3d", "bar_3d"]
+    assert PINNED == ["bar_3d"], PINNED
     assert [v["title"] for v in vizzes] == ["SYSTEM LOAD", "TOP PROCESSES", "SYSTEM LOAD"]
 
     # previews are not interactive: they are mid-flight, and their elements are

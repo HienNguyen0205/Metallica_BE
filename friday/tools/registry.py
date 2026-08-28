@@ -3,7 +3,7 @@
 from typing import Any
 
 from .base import Tool
-from .filesystem.notes import run_write_note
+from .filesystem.notes import run_read_note, run_write_note
 from .integrations.search import run_search_web
 from .system.metrics import preview_metrics, run_system_metrics
 from .system.processes import preview_processes, run_process_list
@@ -83,6 +83,30 @@ def _build_default_registry() -> dict[str, Tool]:
             },
             risk="high",
             run=run_write_note,
+        ),
+        Tool(
+            name="read_note",
+            description=(
+                "Read a note the operator has saved, or list them when no name is "
+                "given. Use this for any question about existing notes - what was "
+                "written, what notes exist, what one of them says. write_note only "
+                "writes; it cannot answer a question."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "note to read; omit to list every note",
+                    }
+                },
+                "required": [],
+            },
+            # §11 LOW: it reads a directory this service owns and writes nothing.
+            # The notes are the operator's own words, so unlike search_web it puts
+            # no text from strangers into the context.
+            risk="low",
+            run=run_read_note,
         ),
     ]
     return {t.name: t for t in tools}

@@ -89,6 +89,26 @@ thinking → tool_execution → viz(radial_gauge) → viz(bar_3d)
 Previews are **deterministic** — no model call. A planner call per tool result
 would triple our request count against a tier limited by requests-per-minute.
 
+That determinism is also why the **last preview picks the component and the
+planner may not change it**. The planner is pinned to that type through its JSON
+schema (`_schema(pinned)` narrows `type` to a `const`), so the final spec refines
+the data and the title while the shape on screen stays put.
+
+Measured before the pin: the same question, asked twice, planned `bar_3d` once
+and `radial_gauge` the next time. A preview reads the shape of the tool's own
+output; the planner re-reads the same JSON and is entitled to a different
+opinion, which the user experiences as bars building and then being replaced by
+gauges for no reason they can see.
+
+The pin is applied to the schema rather than to the finished plan on purpose. A
+type swapped in afterwards arrives carrying the data fields of the type the
+model *did* choose — forcing `bar_3d` onto a plan written as `radial_gauge`
+yields a bar chart whose `series` is empty. Constrained up front, the model
+fills the fields that component actually reads.
+
+With no preview in the turn — `search_web` declares none — nothing is pinned and
+the planner chooses freely.
+
 A preview deliberately does **not** emit a `visualizing` state. FRIDAY is still
 running tools, and the UI's transition table has no `visualizing →
 tool_execution` edge; announcing it strands the HUD on VISUALIZING for the rest
