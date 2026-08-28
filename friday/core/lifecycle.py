@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from friday.llm import base_url, configured, model
+from friday.memory import long_term
 from friday.tools.integrations.search import configured as search_providers
 from .config import settings
 
@@ -36,4 +37,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "FRIDAY_ALLOWED_ORIGINS is still the localhost default; "
             "a deployed frontend will be blocked by the browser"
         )
+
+    count = await long_term.load()
+    log.info("long-term memory: %d facts", count)
     yield

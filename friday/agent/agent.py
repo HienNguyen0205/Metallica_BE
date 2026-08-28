@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
 from friday import llm
+from friday.memory import long_term
 from friday.tools.registry import REGISTRY, api_tools
 
 from .state import AgentEvent, AgentResult
@@ -55,12 +56,19 @@ async def run(
     approve: Approver,
     result: AgentResult,
     history: Sequence[dict[str, str]] = (),
+    memories: str = "",
 ) -> AsyncIterator[AgentEvent]:
     api = llm.client()
+    # Provenance của ký ức đọc từ đây. Set mới mỗi turn để hai query song song
+    # không thấy tool của nhau.
+    long_term.TURN_TOOLS.set(set())
+    # Ký ức đi kèm system prompt chứ không phải như một lượt hội thoại: nó là
+    # thứ FRIDAY biết, không phải thứ ai đó đã nói.
+    system = f"{SYSTEM}\n\n{memories}" if memories else SYSTEM
     # §15 — prior exchanges sit between the system prompt and the new question,
     # which is what lets "and the disk?" resolve to anything.
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system},
         *history,
         {"role": "user", "content": query},
     ]
@@ -116,6 +124,13 @@ async def run(
 
             result.evidence.append({"tool": tool.name, "output": output})
 
+            long_term.mark_tool_used(tool.name)
+
+            if tool.name == "remember":
+                event = _memory_event(output)
+                if event is not None:
+                    yield event
+
             if tool.preview and "error" not in output:
                 try:
                     yield AgentEvent("preview", tool.preview(output))
@@ -130,3 +145,13 @@ async def run(
 
     log.warning("hit MAX_TURNS without a final answer")
     result.text = "I wasn't able to finish that within the step budget."
+
+
+def _memory_event(output: dict) -> AgentEvent | None:
+    """Một kết quả `remember` thành một AgentEvent, hoặc None nếu tool đó lỗi."""
+    if "remembered" not in output:
+        return None
+    return AgentEvent(
+        "memory",
+        {"id": output["id"], "fact": output["remembered"], "provenance": output["provenance"]},
+    )

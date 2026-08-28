@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from friday.api.dependencies import CONFIRM_TIMEOUT_S, PENDING
-from friday.api.routes import confirm_endpoint, health, query_endpoint, router, run_query
+from friday.api.routes import confirm_endpoint, health, query_endpoint, recall_block, router, run_query
 from friday.api.schemas import Decision, Query
 from friday.core.config import settings
 from friday.core.lifecycle import lifespan
@@ -46,6 +46,7 @@ __all__ = [
     "health",
     "plan",
     "query_endpoint",
+    "recall_block",
     "run_query",
     "sse",
 ]
