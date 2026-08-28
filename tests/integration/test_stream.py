@@ -55,7 +55,7 @@ def stub_planner():
 def test_tool_flow_event_order() -> None:
     stub_planner()
 
-    async def fake_agent(query, approve, result, history=()):
+    async def fake_agent(query, approve, result, history=(), memories=""):
         yield agent.AgentEvent("state", {"state": "tool_execution"})
         yield agent.AgentEvent("tool", {"tool": "get_system_metrics", "risk": "low"})
         yield agent.AgentEvent("state", {"state": "processing"})
@@ -88,7 +88,7 @@ def test_preview_reaches_the_ui_before_the_planner_runs() -> None:
     """§18 — the hologram materializes as data lands, not after the turn ends."""
     stub_planner()
 
-    async def fake_agent(query, approve, result, history=()):
+    async def fake_agent(query, approve, result, history=(), memories=""):
         yield agent.AgentEvent("state", {"state": "tool_execution"})
         yield agent.AgentEvent(
             "preview",
@@ -128,7 +128,7 @@ def test_agent_failure_still_closes_the_stream() -> None:
     """A dead model must not leave the UI stuck in THINKING."""
     stub_planner()
 
-    async def broken(query, approve, result, history=()):
+    async def broken(query, approve, result, history=(), memories=""):
         raise RuntimeError("boom")
         yield  # pragma: no cover - makes this an async generator
 
@@ -186,7 +186,7 @@ def test_every_emitted_state_sequence_is_legal_in_the_ui() -> None:
     """
     stub_planner()
 
-    async def two_tool_agent(query, approve, result, history=()):
+    async def two_tool_agent(query, approve, result, history=(), memories=""):
         for viz_type, title in [("radial_gauge", "SYSTEM LOAD"), ("bar_3d", "TOP PROCESSES")]:
             yield agent.AgentEvent("state", {"state": "tool_execution"})
             yield agent.AgentEvent("tool", {"tool": "t", "risk": "low"})
@@ -215,7 +215,7 @@ def _run_with_decision(decision: bool | None) -> tuple[list[tuple[str, dict]], l
     stub_planner()
     verdicts: list[bool] = []
 
-    async def gated_agent(query, approve, result, history=()):
+    async def gated_agent(query, approve, result, history=(), memories=""):
         verdicts.append(await approve("write_note", "high", {"name": "x", "body": "y"}))
         result.text = "done"
         yield agent.AgentEvent("state", {"state": "processing"})

@@ -56,15 +56,19 @@ async def run(
     approve: Approver,
     result: AgentResult,
     history: Sequence[dict[str, str]] = (),
+    memories: str = "",
 ) -> AsyncIterator[AgentEvent]:
     api = llm.client()
     # Provenance của ký ức đọc từ đây. Set mới mỗi turn để hai query song song
     # không thấy tool của nhau.
     long_term.TURN_TOOLS.set(set())
+    # Ký ức đi kèm system prompt chứ không phải như một lượt hội thoại: nó là
+    # thứ FRIDAY biết, không phải thứ ai đó đã nói.
+    system = f"{SYSTEM}\n\n{memories}" if memories else SYSTEM
     # §15 — prior exchanges sit between the system prompt and the new question,
     # which is what lets "and the disk?" resolve to anything.
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system},
         *history,
         {"role": "user", "content": query},
     ]

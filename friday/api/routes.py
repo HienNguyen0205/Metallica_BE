@@ -16,6 +16,9 @@ from friday.api.dependencies import PENDING, guard, require_known_origin
 from friday.api.schemas import Decision, Query
 from friday.core.config import settings
 from friday.events.serializer import sse
+from friday.memory import embed as embed_mod
+from friday.memory import long_term
+from friday.memory.embed import EmbedError
 
 # Keep CONFIRM_TIMEOUT_S readable for old imports, but resolve dynamically
 CONFIRM_TIMEOUT_S = deps.CONFIRM_TIMEOUT_S
@@ -95,6 +98,33 @@ def quota_detail(err: Exception) -> str:
     return f"{window}{f'; retry in {retry}' if retry else ''}"
 
 
+async def recall_block(query: str) -> str:
+    """Ký ức liên quan tới câu hỏi này, đã đóng gói cho prompt.
+
+    Chuỗi rỗng là câu trả lời hợp lệ và là mặc định khi có bất cứ gì hỏng: không
+    có ký ức, không cấu hình store, embedding chết. Ký ức là phần thêm — không
+    lý do gì để một câu hỏi thất bại vì FRIDAY không nhớ ra.
+    """
+    if not long_term.CACHE:
+        return ""
+    try:
+        vectors = await embed_mod.embed([query])
+    except EmbedError:
+        log.warning("recall skipped: embedding unavailable", exc_info=True)
+        return ""
+
+    hits = long_term.top_k(vectors[0], long_term.TOP_K_DEFAULT)
+    if hits:
+        asyncio.get_running_loop().run_in_executor(None, _touch, [m.id for m in hits])
+    return long_term.render_block(hits)
+
+
+def _touch(ids: list[int]) -> None:
+    from friday.memory.store import touch
+
+    touch(ids)
+
+
 async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[str]:
     yield sse("state", {"state": "thinking"})
 
@@ -121,13 +151,14 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
     async def pump() -> None:
         nonlocal failure
         try:
-            async for event in agent.run(query, approve, outcome, memory.history(session_id)):
+            async for event in agent.run(query, approve, outcome, memory.history(session_id), memories):
                 await events.put(event)
         except BaseException as err:
             failure = err
         finally:
             await events.put(None)
 
+    memories = await recall_block(query)
     task = asyncio.create_task(pump())
     stage = "agent"
     # §18 — the component the last preview already materialised. The planner is
