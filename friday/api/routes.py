@@ -16,6 +16,7 @@ from friday.api.dependencies import PENDING, guard, require_known_origin
 from friday.api.schemas import Decision, Query
 from friday.core.config import settings
 from friday.events.serializer import sse
+from friday.memory import consolidate
 from friday.memory import embed as embed_mod
 from friday.memory import long_term
 from friday.memory.embed import EmbedError
@@ -228,6 +229,11 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
     memory.remember(session_id, query, answer)
     yield sse("answer", {"text": answer})
     yield sse("done", {})
+    # Sau `done`, không chờ: nó tốn một model call và người dùng không có lý do
+    # gì phải đợi FRIDAY dọn dẹp.
+    consolidate.note_turn()
+    if consolidate.should_run():
+        asyncio.create_task(consolidate.run())
 
 
 @router.post("/query", dependencies=[Depends(guard)])
