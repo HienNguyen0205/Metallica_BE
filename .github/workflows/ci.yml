@@ -47,6 +47,20 @@ jobs:
       - name: Read note tests
         run: python tests/unit/test_read_note.py
 
+      # Ký ức dài hạn: store, embedding, xếp hạng, ghi/nạp, hợp nhất, tool
+      # remember, recall trong stream, API xem/xoá, và nạp cache lúc khởi động.
+      - name: Long-term memory tests
+        run: |
+          python tests/unit/test_memory_store.py
+          python tests/unit/test_memory_embed.py
+          python tests/unit/test_long_term.py
+          python tests/unit/test_long_term_io.py
+          python tests/unit/test_consolidate.py
+          python tests/integration/test_remember_flow.py
+          python tests/integration/test_recall_stream.py
+          python tests/integration/test_memory_api.py
+          python tests/integration/test_lifecycle_memory_load.py
+
       # Event contract, §11 permission gate, §22 tool sandboxing.
       - name: Transport and permission tests
         run: python tests/integration/test_stream.py

@@ -45,3 +45,10 @@ services:
         value: "30"
       - key: FRIDAY_GLOBAL_LIMIT_PER_HOUR
         value: "100"
+
+      # Ký ức dài hạn. Không đặt thì service vẫn chạy, chỉ không nhớ gì qua
+      # restart. Service key bỏ qua RLS — đặt trong dashboard, không phải file này.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false

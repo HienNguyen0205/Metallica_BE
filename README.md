@@ -158,6 +158,66 @@ The frontend generates the id per **tab** and keeps it in `sessionStorage`
 so an id that outlived the tab would point at nothing while implying continuity.
 A client that sends no id gets the old stateless behaviour.
 
+## §15 Long-term memory
+
+Opt-in, on top of the short-term memory above. The model itself decides what
+is worth keeping: a `remember` tool call stores one fact in Supabase with its
+provenance (`user` or `tool`), and the most relevant facts are recalled into
+the prompt on later turns, by any session, forever — until deleted. Set
+`SUPABASE_URL` and `SUPABASE_SERVICE_KEY` to turn it on; unset, FRIDAY runs
+exactly as before and logs one line at startup saying so.
+
+**`remember` costs zero extra model calls.** It is one more tool in the
+existing agent loop (`friday/tools/registry.py`) — the model calls it in the
+same turn it is already running, the same way it calls `search_web` or
+`read_note`. There is no separate "memory pass."
+
+**Recall is top-k over an in-process cache, not a query to Postgres.**
+`friday/memory/long_term.py` loads every row into `CACHE` at startup and
+ranks it with a plain Python cosine loop; `friday/api/routes.py:recall_block`
+embeds the question, takes the top 5 above a similarity floor, and renders
+them into a fenced block in the prompt. This works because the service is
+already pinned to a single uvicorn process by the §11 approval dict
+(`PENDING` in `friday/main.py` — see `render.yaml`), so an in-memory cache
+costs no deployment flexibility that a second worker could have used anyway.
+At a few hundred memories this is sub-millisecond; the schema's `vector(768)`
+column is ready for `pgvector`/`ivfflat` the day the table reaches the
+thousands or the service stops being one process — whichever comes first.
+
+**Consolidation runs after `done`, never in the request path.** A background
+task (`consolidate.run`, kicked off from `run_query` right after the `done`
+event) asks the model to drop duplicate, contradicted, or stale facts once
+every 20 turns or once the cache passes 100 memories. It costs a model call,
+so it deliberately never sits between the user and their answer.
+
+**`remember` escalates prompt injection from a one-turn problem to a
+permanent one.** Without long-term memory, a hostile page reached through
+`search_web` can only poison the current turn — the text is gone once the
+response is sent. With `remember`, the model can decide that hostile text is
+worth keeping, and if it does, that sentence is in *every future prompt,
+for every session*, until an operator notices it in `GET /memory` and calls
+`DELETE /memory/{id}`. A hostile line only has to land once.
+
+Two hard blocks were considered and deliberately rejected: refusing
+`remember` on any turn that also ran `search_web`, and marking `remember`
+`risk="high"` so it goes through the same human-approval gate as a real
+write. Both would have made the tool safe by making it useless for the thing
+it exists to do — noticing something the operator said and holding onto it —
+so neither shipped. What ships instead is three layers, all mandatory: the
+`fact` field is always the model's own sentence, never raw tool output
+verbatim; the recalled block is fenced and labelled explicitly as data, not
+instructions, with each line tagged `(user)` or `(tool)` so a `(tool)` fact
+is visibly suspect; and every successful `remember` fires a `memory` SSE
+event the instant it happens, so the write is visible on the HUD rather than
+silent. None of that stops a bad fact from being written — it only makes the
+write visible and reversible.
+
+`SUPABASE_SERVICE_KEY` bypasses row-level security entirely. It is read only
+by this backend (`friday/memory/store.py`, via `os.getenv`) and must never be
+given a `NEXT_PUBLIC_` prefix or otherwise reach the frontend bundle — that
+would hand a browser script full read/write/delete on every operator's
+memory table.
+
 ## §22 The gate on /query
 
 `/query` is public, unauthenticated, and every call spends provider quota.
