@@ -36,8 +36,8 @@ log = logging.getLogger("friday.memory")
 #: docs/AGENTIC_MEMORY_RESULTS.md). Ba dải:
 #:
 #:   ký ức đúng cho câu hỏi của nó   0.625 – 0.785   (6/6 xếp hạng #1)
-#:   ký ức khác trên câu hỏi liên quan 0.41 – 0.600
-#:   mọi ký ức trên câu hỏi KHÔNG liên quan  ≤ 0.504
+#:   ký ức khác trên câu hỏi liên quan 0.45 – 0.600
+#:   mọi ký ức trên câu hỏi KHÔNG liên quan  0.41 – 0.504
 #:
 #: 0.58 nằm giữa hai dải quan trọng nhất — trên mọi điểm của câu hỏi không liên
 #: quan 0.076, dưới mọi ký ức đúng 0.045 — và cố ý KHÔNG chọn 0.61 (điểm giữa
