@@ -4,9 +4,18 @@
 """
 
 import asyncio
+import json
+from types import SimpleNamespace
 
+from friday import llm
 from friday.memory import consolidate
 from friday.memory import long_term as lt
+
+#: The real implementation, captured before any test gets a chance to
+#: monkeypatch `consolidate.choose_drops` into a stub — later tests that need
+#: the actual parsing logic restore it from here rather than depending on
+#: alphabetical test order to still have it intact.
+_REAL_CHOOSE_DROPS = consolidate.choose_drops
 
 
 def seed(count):
@@ -14,6 +23,19 @@ def seed(count):
     for i in range(count):
         lt.CACHE.append(lt.Memory(id=i, fact=f"m{i}", provenance="user", embedding=[1.0, 0.0]))
     consolidate.TURN_COUNTER = 0
+
+
+class FakeClient:
+    """Same shape as tests/unit/test_memory_embed.py's fake — no network."""
+
+    def __init__(self, content):
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create),
+        )
+        self._content = content
+
+    async def _create(self, **kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))])
 
 
 def test_it_stays_quiet_while_there_is_nothing_to_do():
@@ -56,6 +78,28 @@ def test_it_drops_what_the_model_names():
     consolidate.choose_drops = choose
     assert asyncio.run(consolidate.run()) == 2
     assert [m.id for m in lt.CACHE] == [0, 2, 4]
+
+
+# ---------- the real choose_drops (every other test stubs it out) ----------
+
+
+def test_choose_drops_parses_string_ids_into_ints():
+    # The model replies with ids as JSON strings, same as any real chat
+    # completion would — this is what makes `int(i)` in choose_drops load
+    # bearing rather than a no-op.
+    llm.client = lambda: FakeClient(json.dumps({"drop": ["1", "3"]}))
+    memories = [lt.Memory(id=i, fact=f"m{i}", provenance="user", embedding=[1.0, 0.0]) for i in range(5)]
+    result = asyncio.run(consolidate.choose_drops(memories))
+    assert result == [1, 3], result
+    assert all(isinstance(i, int) for i in result), result
+
+
+def test_a_malformed_reply_does_not_escape_run():
+    seed(3)
+    consolidate.choose_drops = _REAL_CHOOSE_DROPS
+    llm.client = lambda: FakeClient("not json at all")
+    assert asyncio.run(consolidate.run()) == 0, "a parse failure must degrade like any other model failure"
+    assert len(lt.CACHE) == 3
 
 
 def test_the_counter_resets_after_a_run():

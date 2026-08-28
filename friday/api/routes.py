@@ -60,6 +60,13 @@ log = logging.getLogger("friday")
 
 router = APIRouter()
 
+#: Strong references for fire-and-forget background tasks (consolidation).
+#: asyncio only holds a *weak* ref to a task, so one nothing else points to
+#: can be GC'd before it ever runs — dropped silently, since `consolidate.run`
+#: swallows its own exceptions. Each task removes itself on completion, so
+#: this stays bounded.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
 
 def quota_detail(err: Exception) -> str:
     """Which limit the provider refused on, and when it clears.
@@ -233,7 +240,9 @@ async def run_query(query: str, session_id: str | None = None) -> AsyncIterator[
     # gì phải đợi FRIDAY dọn dẹp.
     consolidate.note_turn()
     if consolidate.should_run():
-        asyncio.create_task(consolidate.run())
+        bg_task = asyncio.create_task(consolidate.run())
+        _BACKGROUND_TASKS.add(bg_task)
+        bg_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 @router.post("/query", dependencies=[Depends(guard)])
