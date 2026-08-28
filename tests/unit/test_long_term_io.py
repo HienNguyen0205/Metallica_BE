@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import contextvars
 
 from friday.memory import embed as embed_mod
 from friday.memory import long_term as lt
@@ -105,17 +106,23 @@ def test_forget_removes_it_from_both_places():
     assert lt.forget(999) is False
 
 
-def test_a_mark_made_without_a_prior_set_does_not_survive_a_turn_reset():
-    """The ContextVar default must not be one shared mutable set.
+def test_a_mark_in_one_context_does_not_leak_into_a_sibling_context():
+    """mark_tool_used must never write through to the ContextVar's shared default.
 
-    If it were, mark_tool_used would mutate that single shared object and the
-    mark would outlive any reset — poisoning every context, forever, that
-    never called .set() itself.
+    An earlier version of this test only proved current_provenance() could
+    survive an explicit TURN_TOOLS.set(None) override in the SAME context —
+    that passed even against a mark_tool_used that still mutated one shared
+    object, because the override simply hid the read. The real leak only
+    shows up across two independent contexts, neither of which ever calls
+    .set() itself: if they are sharing one mutable default, a mark made
+    inside one is visible from the other.
     """
     stub()
-    lt.mark_tool_used("search_web")  # no TURN_TOOLS.set(...) beforehand
-    lt.TURN_TOOLS.set(None)  # the reset a new turn performs
-    assert lt.current_provenance() == "user", "mark leaked through the shared default"
+    ctx_a = contextvars.copy_context()
+    ctx_a.run(lt.mark_tool_used, "search_web")  # marked inside A, no .set() by A
+
+    ctx_b = contextvars.copy_context()  # a sibling snapshot, not A itself
+    assert ctx_b.run(lt.current_provenance) == "user", "mark leaked into a sibling context"
 
 
 if __name__ == "__main__":
