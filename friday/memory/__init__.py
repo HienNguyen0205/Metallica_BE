@@ -5,6 +5,7 @@ chưng cất, bền qua restart.
 file, nên `from friday import memory` ở routes.py và test không phải đổi gì.
 """
 
+from . import long_term
 from .short_term import MAX_SESSIONS, MAX_TURNS, _sessions, clear, history, remember
 
-__all__ = ["MAX_SESSIONS", "MAX_TURNS", "clear", "history", "remember"]
+__all__ = ["MAX_SESSIONS", "MAX_TURNS", "_sessions", "clear", "history", "long_term", "remember"]

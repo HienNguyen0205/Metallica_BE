@@ -15,7 +15,15 @@ ghi (`friday.memory.store`) là việc của một task khác.
 """
 
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
+
+from friday.memory.embed import EmbedError, embed
+from friday.memory.store import StoreError
+from friday.memory.store import configured as store_configured
+from friday.memory.store import delete as store_delete
+from friday.memory.store import insert as store_insert
+from friday.memory.store import select_all as store_select_all
 
 log = logging.getLogger("friday.memory")
 
@@ -104,3 +112,88 @@ def render_block(memories: list[Memory]) -> str:
         f"{body}\n"
         "</remembered_facts>"
     )
+
+
+#: Tool đã chạy trong turn hiện tại. ContextVar chứ không phải biến module: mỗi
+#: query là một asyncio.Task riêng và context được sao chép khi tạo task, nên
+#: hai query chạy song song không giẫm lên nhau.
+TURN_TOOLS: ContextVar[set[str]] = ContextVar("turn_tools", default=set())
+
+#: Tool duy nhất đưa chữ do người lạ viết vào context.
+UNTRUSTED_TOOLS = {"search_web"}
+
+
+def mark_tool_used(name: str) -> None:
+    TURN_TOOLS.get().add(name)
+
+
+def current_provenance() -> str:
+    return "tool" if TURN_TOOLS.get() & UNTRUSTED_TOOLS else "user"
+
+
+def _row_to_memory(row: dict) -> Memory:
+    return Memory(
+        id=int(row["id"]),
+        fact=row["fact"],
+        provenance=row.get("provenance", "user"),
+        embedding=row.get("embedding") or [],
+        use_count=int(row.get("use_count", 0)),
+        last_used_at=str(row.get("last_used_at", "")),
+    )
+
+
+async def load() -> int:
+    """Nạp cache lúc khởi động. Không bao giờ ném — ký ức là phần thêm."""
+    clear()
+    if not store_configured():
+        log.info("long-term memory disabled: SUPABASE_URL / SUPABASE_SERVICE_KEY not set")
+        return 0
+    try:
+        rows = store_select_all()
+    except StoreError:
+        log.warning("could not load long-term memory; running without it", exc_info=True)
+        return 0
+
+    CACHE.extend(_row_to_memory(row) for row in rows)
+    enforce_cap()
+    log.info("loaded %d memories", len(CACHE))
+    return len(CACHE)
+
+
+async def add(fact: str, provenance: str) -> Memory | None:
+    vectors = await embed([fact])
+    row = store_insert(fact, provenance, vectors[0])
+    memory = _row_to_memory({**row, "embedding": vectors[0]})
+    CACHE.append(memory)
+    enforce_cap()
+    return memory
+
+
+def forget(memory_id: int) -> bool:
+    """Xoá vĩnh viễn. Trả False nếu không có ký ức nào mang id đó."""
+    before = len(CACHE)
+    CACHE[:] = [m for m in CACHE if m.id != memory_id]
+    if len(CACHE) == before:
+        return False
+    try:
+        store_delete(memory_id)
+    except StoreError:
+        log.warning("memory %s dropped from cache but not from the store", memory_id, exc_info=True)
+    return True
+
+
+async def run_remember(payload: dict) -> dict:
+    """Tool `remember`. Model tự gọi khi thấy điều gì đáng giữ."""
+    fact = str(payload.get("fact", "")).strip()[:MAX_FACT_CHARS]
+    if not fact:
+        return {"error": "empty fact"}
+    if not store_configured():
+        return {"error": "long-term memory is not configured"}
+
+    try:
+        memory = await add(fact, current_provenance())
+    except (StoreError, EmbedError) as err:
+        log.warning("could not store a memory", exc_info=True)
+        return {"error": f"could not remember: {type(err).__name__}"}
+
+    return {"remembered": memory.fact, "id": memory.id, "provenance": memory.provenance}
