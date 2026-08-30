@@ -5,6 +5,7 @@ from typing import Any
 from .base import Tool
 from .filesystem.notes import run_read_note, run_write_note
 from .integrations.search import run_search_web
+from .system.clock import run_current_time
 from .system.metrics import preview_metrics, run_system_metrics
 from .system.processes import preview_processes, run_process_list
 from friday.memory.long_term import run_remember
@@ -22,6 +23,18 @@ def _build_default_registry() -> dict[str, Tool]:
             risk="low",
             run=run_system_metrics,
             preview=preview_metrics,
+        ),
+        Tool(
+            name="get_current_time",
+            description=(
+                "Read the clock on the host this orchestrator runs on: current "
+                "date, time, weekday and UTC offset. Use this for any question "
+                "about what time or day it is. Never answer that from memory and "
+                "never search the web for it."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
+            risk="low",
+            run=run_current_time,
         ),
         Tool(
             name="get_process_list",
