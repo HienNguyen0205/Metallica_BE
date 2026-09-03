@@ -15,6 +15,7 @@ VisualizationType = Literal[
     "particle_flow",
     "globe",
     "timeline",
+    "heatmap_3d",
 ]
 
 
